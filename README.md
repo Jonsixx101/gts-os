@@ -43,10 +43,11 @@ passende Datei, prueft sie und richtet sie als `startup.lua` ein. Turtles danach
   im Spiel ihre Updates holen.
 - Jede Datei hat eine feste **Raw-Adresse**, z.B.
   `https://raw.githubusercontent.com/Jonsixx101/gts-os/main/gts_os.lua`. Die liest das OS.
-- Jede Version bekommt einen **Tag** (z.B. `v8.0`). Darueber kommt eine alte Fassung
-  zurueck, falls ein Update schiefgeht: `.../gts-os/v8.0/gts_os.lua`.
-- Neue Version veroeffentlichen = Dateien + neues `manifest.lua` committen, Tag setzen,
-  pushen. Danach finden alle Computer im Spiel das Update von selbst.
+- Jede Version bekommt zusaetzlich einen eigenen **Zweig** mit ihrem Namen (z.B. `v8.0`),
+  der danach nie mehr geaendert wird. Darueber kommt eine alte Fassung zurueck, falls ein
+  Update schiefgeht: `.../gts-os/v8.0/gts_os.lua`.
+- Neue Version veroeffentlichen = Dateien + neues `manifest.lua` auf `main` committen,
+  Versions-Zweig anlegen, pushen. Danach finden alle Computer im Spiel das Update von selbst.
 - GitHub cached die Raw-Dateien ein paar Minuten: direkt nach dem Veroeffentlichen
   kann SUCHEN noch kurz die alte Version melden.
 
