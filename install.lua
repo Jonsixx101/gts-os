@@ -57,7 +57,7 @@ if type(man) ~= "table" or type(man.files) ~= "table" or type(man.files[edition]
     return
 end
 local entry = man.files[edition]
-say("V" .. tostring(man.version), colors.lime)
+say(tostring(man.release or ("V" .. tostring(man.version))), colors.lime)
 
 -- 3) Datei laden und pruefen
 write("Lade " .. entry.file .. " ... ")

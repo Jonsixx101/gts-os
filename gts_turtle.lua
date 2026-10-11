@@ -25,7 +25,7 @@
 --   [6] Welt und Funde     [12] Bildschirm und Start
 -- ======================================================================
 
-local VERSION = "5.2"
+local VERSION = "5.3"
 
 -- ======================================================================
 -- [1] KONFIGURATION
@@ -1331,12 +1331,16 @@ local function readTable(path)
     return type(s) == "table" and s or nil
 end
 
--- GPS-Position oder nil (ohne GPS-Netz einfach nil).
+-- GPS-Position oder nil (ohne GPS-Netz einfach nil). gpsLast = letzte
+-- gelungene Messung (fuer die GPS-Ebene der Karte am PC).
+local gpsLast = {}
 local function gpsFix()
     if not gps then return nil end
     local ok, x, y, z = pcall(gps.locate, 1)
     if ok and type(x) == "number" then
-        return { x = math.floor(x + 0.5), y = math.floor(y + 0.5), z = math.floor(z + 0.5) }
+        local fix = { x = math.floor(x + 0.5), y = math.floor(y + 0.5), z = math.floor(z + 0.5) }
+        gpsLast.t, gpsLast.fix = os.clock(), fix
+        return fix
     end
 end
 
@@ -2464,6 +2468,7 @@ local function payload()
         wpos = wpos, wf = data.compass and (data.compass + pos.f) % 4 or nil,
         base = data.world and { x = data.world.x, y = data.world.y, z = data.world.z } or nil,
         gpsOk = gpsState.ok, pick = tool.have.pick == true,
+        gpsAge = gpsLast.t and math.floor(os.clock() - gpsLast.t) or nil, gpsFix = gpsLast.fix,
     }
 end
 

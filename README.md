@@ -26,7 +26,7 @@ passende Datei, prueft sie und richtet sie als `startup.lua` ein. Turtles danach
 | `gts_turtle.lua` | Schwarm-Agent fuer jede Turtle (kommt per TURTLE-DISK / UPDATE vom PC) |
 | `manifest.lua` | Versionen, Groessen und Pruefsummen fuer das Update |
 | `install.lua` | Installer (siehe oben) |
-| `chatbox.lua`, `gts_blaze.lua` | Zusatzprogramme (LUA APPS bzw. eigenstaendige Blaze-Turtle) |
+| `chatbox.lua` | Zusatzprogramm fuer LUA APPS |
 
 ## Updates
 
@@ -36,6 +36,13 @@ passende Datei, prueft sie und richtet sie als `startup.lua` ein. Turtles danach
   Startet die neue Fassung nicht, kommt die alte automatisch zurueck.
 - **Turtles:** danach am PC SCHWARM > ALLE > UPDATE (der neue Agent geht per Funk raus).
 
+## Versionen
+
+Angezeigt wird die Versionsnummer der Vollversion (aktuell **1.1.0**). Intern zaehlt das
+Update eine eigene Nummer weiter (`version` im Manifest, z.B. `8.1`) - damit erkennen auch
+aeltere Installationen jedes neue Update. Eine 8.0 meldet deshalb einmalig "V8.1 ist da";
+nach dem Update steht ueberall 1.1.0.
+
 ## Wie das Repo funktioniert (kurz)
 
 - Ein **Repository** ist ein Ordner mit Verlauf: jede Aenderung ist ein **Commit**
@@ -43,9 +50,9 @@ passende Datei, prueft sie und richtet sie als `startup.lua` ein. Turtles danach
   im Spiel ihre Updates holen.
 - Jede Datei hat eine feste **Raw-Adresse**, z.B.
   `https://raw.githubusercontent.com/Jonsixx101/gts-os/main/gts_os.lua`. Die liest das OS.
-- Jede Version bekommt zusaetzlich einen eigenen **Zweig** mit ihrem Namen (z.B. `v8.0`),
+- Jede Version bekommt zusaetzlich einen eigenen **Zweig** mit ihrem Namen (z.B. `v1.1.0`),
   der danach nie mehr geaendert wird. Darueber kommt eine alte Fassung zurueck, falls ein
-  Update schiefgeht: `.../gts-os/v8.0/gts_os.lua`.
+  Update schiefgeht: `.../gts-os/v1.1.0/gts_os.lua`.
 - Neue Version veroeffentlichen = Dateien + neues `manifest.lua` auf `main` committen,
   Versions-Zweig anlegen, pushen. Danach finden alle Computer im Spiel das Update von selbst.
 - GitHub cached die Raw-Dateien ein paar Minuten: direkt nach dem Veroeffentlichen

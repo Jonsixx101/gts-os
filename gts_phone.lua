@@ -1,5 +1,5 @@
 -- ======================================================================
--- GTS OS Phone v8.0 - Kernel, UI und Apps            (CC: Tweaked, MC 1.21.1)
+-- GTS OS Phone 1.1.0 - Kernel, UI und Apps            (CC: Tweaked, MC 1.21.1)
 -- by Jonsi
 -- ======================================================================
 -- Laeuft auf dem Advanced Computer, am liebsten mit Advanced Monitor
@@ -27,7 +27,12 @@
 --   [16] Dienste und Start
 -- ======================================================================
 
-local VERSION = "8.0"
+-- Version: RELEASE wird angezeigt (1.1.0 = erstes Update der Vollversion).
+-- VERSION ist die interne Update-Nummer: steigt mit jeder Fassung und muss
+-- groesser als "8.0" sein (so hiess die erste Vollversion), sonst findet ein
+-- dort installiertes OS das Update nicht. Nirgends angezeigt.
+local VERSION = "8.1"
+local RELEASE = "1.1.0"
 local EDITION = "phone"  -- "pc" in gts_os.lua
 local READONLY = (EDITION ~= "pc")      -- Pocket/Handy: nur anzeigen, keine Befehle
 local PHONE = (EDITION == "phone")      -- GTS Phone: Handy fuer Freunde (Lager, Notizen, Rechner ...)
@@ -1326,7 +1331,7 @@ function Kernel.initDisplay()
     nativeTerm.clear()
     nativeTerm.setCursorPos(1, 1)
     if Kernel.display.monitor then
-        print("GTS OS V" .. VERSION .. " laeuft auf Monitor '" .. Kernel.display.name .. "'.")
+        print("GTS OS " .. RELEASE .. " laeuft auf Monitor '" .. Kernel.display.name .. "'.")
         print("Tastatur hier aktiv. Strg+T beendet.")
         print("")
     end
@@ -2372,7 +2377,7 @@ end
 
 -- Versions-Plakette auf der Rahmen-Unterkante: " * GTS OS 8.0 "
 function Logo.version(y)
-    local text = "  GTS OS " .. VERSION .. " "
+    local text = "  GTS OS " .. RELEASE .. " "
     local x = math.floor((Kernel.w - #text) / 2) + 1
     UI.text(x, y, text, colors.white, colors.gray)
     UI.text(x + 1, y, "\7", colors.lime, colors.gray)
@@ -2428,10 +2433,13 @@ Apps.register{
                    text = "STARTEN", style = "primary", onClick = function() Kernel.open("home") end }
         if by + bhh + 1 <= h - 1 then UI.center(by + bhh + 1, os.date("%H:%M"), colors.lightGray) end
         UI.right(h, "by Jonsi", colors.brown)
-        -- unten links: Neustart im sicheren Modus (ohne Erweiterungen)
-        local label = Sys.safe and "SICHERER MODUS AN" or "SICHERER MODUS"
-        UI.button{ x = 1, y = h, w = #label + 2, h = 1, text = label, style = "ghost", fg = Sys.safe and colors.orange or colors.brown,
-                   confirm = "safe-boot", onClick = function() Sys.setSafe(not Sys.safe) os.reboot() end }
+        -- unten links (nur PC): Neustart im sicheren Modus (ohne Erweiterungen).
+        -- Pocket und Handy: nur ueber INFO > SYSTEM.
+        if not READONLY then
+            local label = Sys.safe and "SICHERER MODUS AN" or "SICHERER MODUS"
+            UI.button{ x = 1, y = h, w = #label + 2, h = 1, text = label, style = "ghost", fg = Sys.safe and colors.orange or colors.brown,
+                       confirm = "safe-boot", onClick = function() Sys.setSafe(not Sys.safe) os.reboot() end }
+        end
     end,
 }
 
@@ -2469,7 +2477,7 @@ local function homeCards()
     end
     local u = Sys and Sys.upd
     if u and u.state == "found" then
-        cards[#cards + 1] = { label = "UPDATE", value = "V" .. u.man.version .. " bereit", dot = colors.yellow, app = "info", arg = "update" }
+        cards[#cards + 1] = { label = "UPDATE", value = Sys.rel(u.man) .. " bereit", dot = colors.yellow, app = "info", arg = "update" }
     end
     if Extras and Extras.alarm then
         cards[#cards + 1] = { label = "ALARM", value = Extras.alarm.name, dot = colors.white, alert = true }
@@ -3329,6 +3337,9 @@ local function makeFleet(def)
         e.wpos, e.base = wc(msg.wpos), wc(msg.base)
         e.wf = num(msg.wf) and (math.floor(msg.wf) % 4) or nil
         e.gpsOk, e.pick = msg.gpsOk == true, msg.pick ~= false
+        -- letzte GPS-Messung der Turtle (Agent ab v5.3): Alter in s und Ort
+        e.gpsAge = (num(msg.gpsAge) and msg.gpsAge >= 0 and msg.gpsAge < 1e7) and msg.gpsAge or nil
+        e.gpsFix = wc(msg.gpsFix)
         -- Chunky-Betrieb (Agent v5.0): die Turtle hoert nur in kurzen Funkfenstern (alle win Sek.)
         local win = num(msg.win)
         e.win = (win and win >= 1 and win <= 120) and win or nil
@@ -3649,9 +3660,30 @@ local function makeFleet(def)
         self.mapAuto = false
     end
 
+    -- Ausrichtung (INFO > EINSTELLUNGEN > Karte: oben): 0 = Norden oben,
+    -- 1 = Osten, 2 = Sueden, 3 = Westen. Welt: x waechst nach Osten, z nach Sueden.
+    -- Bildschirm-Achsen: r = nach rechts, d = nach unten.
+    local function mapRot(up, x, z)
+        if up == 1 then return z, -x elseif up == 2 then return -x, -z elseif up == 3 then return -z, x end
+        return x, z
+    end
+    local function mapUnrot(up, r, d)
+        if up == 1 then return -d, r elseif up == 2 then return -r, -d elseif up == 3 then return d, -r end
+        return r, d
+    end
+    local function ageText(sec)
+        sec = math.floor(sec)
+        if sec < 60 then return sec .. " s" end
+        if sec < 3600 then return math.floor(sec / 60) .. " min" end
+        return math.floor(sec / 3600) .. " h"
+    end
+
     function app:drawMap()
         local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
         local here = Geo.here()
+        local up = tonumber(Settings.get("mapUp")) or 0
+        if up ~= 1 and up ~= 2 and up ~= 3 then up = 0 end
+        local gpsLayer = self.mapGps == true
         local ids = {}
         for id in pairs(self.store) do ids[#ids + 1] = id end
         table.sort(ids)
@@ -3678,9 +3710,19 @@ local function makeFleet(def)
         for _, id in ipairs(ids) do
             local e = self.store[id]
             if e.wpos then
-                pts[#pts + 1] = { x = e.wpos.x, z = e.wpos.z, ch = e.wf and ARROWS[e.wf] or "\7",
+                local label = self:nameOf(id, e) or ("#" .. id)
+                if gpsLayer then
+                    -- GPS-Ebene: Alter der letzten GPS-Messung neben dem Namen
+                    local age = e.gpsAge and (e.gpsAge + (os.clock() - e.seen))
+                    label = label .. " " .. (age and ("GPS " .. ageText(age)) or (e.gpsOk and "GPS ok" or "kein GPS"))
+                    if e.gpsFix and (e.gpsFix.x ~= e.wpos.x or e.gpsFix.z ~= e.wpos.z) then
+                        pts[#pts + 1] = { x = e.gpsFix.x, z = e.gpsFix.z, ch = "+", fg = colors.yellow, order = 0.5 }
+                    end
+                end
+                local dir = e.wf and ((e.wf - up) % 4)
+                pts[#pts + 1] = { x = e.wpos.x, z = e.wpos.z, ch = dir and ARROWS[dir] or "\7",
                                   fg = e.online and (self:colorOf(id) or self.stateColor(e)) or colors.red,
-                                  label = self:nameOf(id, e) or ("#" .. id), id = id, order = 3, keep = true }
+                                  label = label, id = id, order = 3, keep = true }
             else
                 noPos[#noPos + 1] = "#" .. id
             end
@@ -3691,6 +3733,10 @@ local function makeFleet(def)
             { text = "-", onClick = function() self:zoom(1) end },
             { text = "+", onClick = function() self:zoom(-1) end },
             { text = "AUTO", style = (self.mapAuto ~= false) and "primary" or nil, onClick = function() self.mapAuto, self.mapFocus = true, nil end },
+            { text = "GPS", style = gpsLayer and "primary" or nil, onClick = function()
+                self.mapGps = not gpsLayer
+                if self.mapGps then os.queueEvent("gts_gps") end        -- PC misst gleich neu
+            end },
             { text = narrow and "\17" or (focus and "\17 FUNDE" or "\17 SCHWARM"), onClick = function()
                 self.view, self.mapFocus = focus and "finds" or "units", nil
             end },
@@ -3708,18 +3754,19 @@ local function makeFleet(def)
             return
         end
         if self.mapAuto ~= false then
-            local x1, x2, z1, z2
+            local r1, r2, d1, d2
             for _, p in ipairs(pts) do
                 if p.keep or p.order == 1 then
-                    x1, x2 = math.min(x1 or p.x, p.x), math.max(x2 or p.x, p.x)
-                    z1, z2 = math.min(z1 or p.z, p.z), math.max(z2 or p.z, p.z)
+                    local r, d = mapRot(up, p.x, p.z)
+                    r1, r2 = math.min(r1 or r, r), math.max(r2 or r, r)
+                    d1, d2 = math.min(d1 or d, d), math.max(d2 or d, d)
                 end
             end
-            if not x1 then x1, x2, z1, z2 = pts[1].x, pts[1].x, pts[1].z, pts[1].z end
-            cx, cz = (x1 + x2) / 2, (z1 + z2) / 2
+            if not r1 then r1, d1 = mapRot(up, pts[1].x, pts[1].z) r2, d2 = r1, d1 end
+            cx, cz = mapUnrot(up, (r1 + r2) / 2, (d1 + d2) / 2)
             local fit = #MAP_SCALES
             for i, sc in ipairs(MAP_SCALES) do
-                if (x2 - x1) / sc <= mw - 8 and (z2 - z1) / (sc * 1.5) <= mh - 2 then fit = i break end
+                if (r2 - r1) / sc <= mw - 8 and (d2 - d1) / (sc * 1.5) <= mh - 2 then fit = i break end
             end
             self.mapFit, self.mapCx, self.mapCz = fit, cx, cz
             scale = MAP_SCALES[fit]
@@ -3729,40 +3776,54 @@ local function makeFleet(def)
         end
         local sx, sz = scale, scale * 1.5
         local ox, oy = mx + math.floor(mw / 2), my + math.floor(mh / 2)
-        local function col(x) return ox + math.floor((x - cx) / sx + 0.5) end
-        local function row(z) return oy + math.floor((z - cz) / sz + 0.5) end
+        local function place(x, z)
+            local r, d = mapRot(up, x - cx, z - cz)
+            return ox + math.floor(r / sx + 0.5), oy + math.floor(d / sz + 0.5)
+        end
+        local function world(c, rr)          -- Bildschirm -> Welt
+            local dx, dz = mapUnrot(up, (c - ox) * sx, (rr - oy) * sz)
+            return cx + dx, cz + dz
+        end
         local function inside(c, r) return c >= mx and c < mx + mw and r >= my and r < my + mh end
 
         -- Antippen der Flaeche: dorthin verschieben
         UI.hit(mx, my, mw, mh, function(x, y)
-            self.mapCx, self.mapCz = cx + (x - ox) * sx, cz + (y - oy) * sz
+            self.mapCx, self.mapCz = world(x, y)
             self.mapZoom = self.mapZoom or (self.mapFit or 4)
             if self.mapAuto ~= false then self.mapZoom = self.mapFit or 4 end
             self.mapAuto = false
         end)
 
-        -- Chunk-Grenzen (nur nah genug) und Nordpfeil
-        if scale <= 2 then
-            for c = mx, mx + mw - 1 do
-                local x = cx + (c - ox) * sx
-                if math.floor(x / 16) ~= math.floor((x - sx) / 16) then
-                    for r = my, my + mh - 1, 2 do UI.text(c, r, "\183", colors.gray) end
-                end
-            end
-            for r = my, my + mh - 1 do
-                local z = cz + (r - oy) * sz
-                if math.floor(z / 16) ~= math.floor((z - sz) / 16) then
-                    for c = mx, mx + mw - 1, 2 do UI.text(c, r, "\183", colors.gray) end
-                end
+        -- Chunk-Raster: nah jeder Chunk, weiter weg nur jeder 2./4./8. ... (mind. 4 Zeichen Abstand)
+        local k = 1
+        while 16 * k / scale < 6 do k = k * 2 end
+        local cell = 16 * k
+        local function cellOf(c, rr)
+            local x, z = world(c, rr)
+            return math.floor(x / cell), math.floor(z / cell)
+        end
+        for c = mx + 1, mx + mw - 1 do
+            local a1, b1 = cellOf(c - 1, oy)
+            local a2, b2 = cellOf(c, oy)
+            if a1 ~= a2 or b1 ~= b2 then
+                for r = my, my + mh - 1 do UI.text(c, r, "\183", colors.brown) end
             end
         end
-        UI.text(mx + mw - 3, my, "N\24", colors.lightGray)
+        for r = my + 1, my + mh - 1 do
+            local a1, b1 = cellOf(ox, r - 1)
+            local a2, b2 = cellOf(ox, r)
+            if a1 ~= a2 or b1 ~= b2 then
+                for c = mx, mx + mw - 1, 2 do UI.text(c, r, "\183", colors.brown) end
+            end
+        end
+        -- Nordpfeil oben rechts (zeigt, wo Norden auf der gedrehten Karte liegt)
+        UI.text(mx + mw - 3, my, "N" .. ARROWS[(0 - up) % 4], colors.lightGray)
 
         -- Punkte (Turtles und PC am Rand festhalten, wenn ausserhalb)
         table.sort(pts, function(a, b) return a.order < b.order end)
         local used = {}
         for _, p in ipairs(pts) do
-            local c, r = col(p.x), row(p.z)
+            local c, r = place(p.x, p.z)
             local out = not inside(c, r)
             if out and p.keep then
                 c = math.max(mx, math.min(mx + mw - 1, c))
@@ -3789,11 +3850,17 @@ local function makeFleet(def)
             end
         end
 
-        -- Fusszeile: Massstab, Legende, Turtles ohne Koordinaten
-        local info = "1 Zeichen = " .. scale .. " Bl."
-        if not here then info = info .. "  PC-Position fehlt (GPS / INFO)" end
-        if #noPos > 0 then info = info .. "  ohne Koord.: " .. table.concat(noPos, " ") end
-        if not narrow and #info + 30 < w then info = info .. "   \4 " .. ((EDITION == "pc") and "PC" or "Du") .. "  H Basis  \26 Turtle  \7 Fund" end
+        -- Fusszeile: Massstab, Raster, Legende, Turtles ohne Koordinaten
+        local info = "1 Zeichen = " .. scale .. " Bl.  Raster " .. ((k == 1) and "1 Chunk" or (k .. " Chunks"))
+        if gpsLayer then
+            local g = Geo.gpsT and ((EDITION == "pc") and "PC" or "Du") .. "-GPS vor " .. ageText(os.clock() - Geo.gpsT)
+            info = info .. "  " .. (g or ("PC-GPS: " .. ((Apps.byId.info and Apps.byId.info.gpsBusy) and "misst ..." or "keine Antwort")))
+                   .. "  + letzte Turtle-Messung"
+        else
+            if not here then info = info .. "  PC-Position fehlt (GPS / INFO)" end
+            if #noPos > 0 then info = info .. "  ohne Koord.: " .. table.concat(noPos, " ") end
+            if not narrow and #info + 30 < w then info = info .. "   \4 " .. ((EDITION == "pc") and "PC" or "Du") .. "  H Basis  \26 Turtle  \7 Fund" end
+        end
         if focus then
             local d = Geo.from(here, focus)
             info = "Fund " .. focus.kind .. " " .. Finds.where(focus) .. (d and ("  " .. d .. ((EDITION == "pc") and " vom PC" or " von dir")) or "")
@@ -5743,7 +5810,7 @@ end
 -- ---------- Kategorien verwalten ----------
 function Lager:drawCats()
     local w, bh, narrow = Kernel.w, UI.bh(), UI.narrow()
-    local top = UI.header("KATEGORIEN", not narrow and "Reihenfolge, Farbe, Name - eigene loeschen" or nil, {
+    local top = UI.header("KATEGORIEN", not narrow and "\17 \16 = Reihenfolge in der Leiste  \183  X loescht eigene" or nil, {
         { text = narrow and "+K" or "+ KATEGORIE", onClick = function()
             Input.open(self, { title = "Neue Kategorie", maxLen = 14, onOk = function(t)
                 if t ~= "" then Kat.create(t, false) self:pageState().page = 999 end   -- ans Ende (neue Zeile sichtbar)
@@ -5762,8 +5829,8 @@ function Lager:drawCats()
     UI.list(self:pageState(), Kat.data.cats, top, ch + 1, function(c, y)
         local tx, xr = UI.rowCard(y, ch)
         local buttons = {
-            { text = "\30", onClick = function() Kat.shift(c.id, -1) end },
-            { text = "\31", onClick = function() Kat.shift(c.id, 1) end },
+            { text = "\17", onClick = function() Kat.shift(c.id, -1) end },     -- in der Leiste nach links
+            { text = "\16", onClick = function() Kat.shift(c.id, 1) end },      -- nach rechts
             { text = "FARBE", fg = c.color, onClick = function() Kat.recolor(c.id) end },
             { text = "NAME", onClick = function()
                 Input.open(self, { title = "Name der Kategorie", text = c.name, maxLen = 14, onOk = function(t) Kat.rename(c.id, t) end })
@@ -5906,24 +5973,29 @@ end
 
 local SORTS = { { id = "menge", label = "MENGE" }, { id = "az", label = "A-Z" }, { id = "neu", label = "NEU" }, { id = "mod", label = "MOD" } }
 
--- Kategorie-Chips in einer Zeile; passen nicht alle, blaettern < >.
+-- Kategorie-Chips in einer Zeile; passen nicht alle, blaettern < > seitenweise.
+-- Am Ende ist die Leiste rechts aufgefuellt (kein Leerraum, letzter Chip sichtbar).
 function Lager:drawChips(chips, y, x0, xMax)
     local widths = {}
     for i, c in ipairs(chips) do widths[i] = #c.name + #tostring(c.n) + 5 end
-    self.chipOff = math.max(1, math.min(self.chipOff or 1, #chips))
-    -- aktiven Chip sichtbar halten
-    local active
-    for i, c in ipairs(chips) do if c.id == self.cat then active = i end end
     local function fits(from)
         local x, last = x0, from - 1
         for i = from, #chips do
             if x + widths[i] - 1 > xMax - 8 then break end
             x, last = x + widths[i] + 1, i
         end
-        return last
+        return math.max(last, from)          -- mindestens ein Chip
     end
+    -- groesster Start, bei dem der letzte Chip noch draufpasst
+    local maxOff = #chips
+    while maxOff > 1 and fits(maxOff - 1) >= #chips do maxOff = maxOff - 1 end
+    self.chipOff = math.max(1, math.min(self.chipOff or 1, maxOff))
     -- neu gewaehlte Kategorie sichtbar machen (danach darf man frei blaettern)
-    if active and active ~= self.chipShown and (active < self.chipOff or active > fits(self.chipOff)) then self.chipOff = active end
+    local active
+    for i, c in ipairs(chips) do if c.id == self.cat then active = i end end
+    if active and active ~= self.chipShown and (active < self.chipOff or active > fits(self.chipOff)) then
+        self.chipOff = math.min(active, maxOff)
+    end
     self.chipShown = active
     local last = fits(self.chipOff)
     local x = x0
@@ -5931,18 +6003,25 @@ function Lager:drawChips(chips, y, x0, xMax)
         local c = chips[i]
         local on = (c.id == self.cat)
         local bg = on and colors.white or colors.gray
+        local name = c.name:sub(1, math.max(1, xMax - 8 - x - #tostring(c.n) - 4))
         UI.text(x, y, " \7", c.color, bg)
-        UI.text(x + 2, y, " " .. c.name .. " ", on and colors.black or colors.white, bg)
-        UI.text(x + 4 + #c.name, y, tostring(c.n) .. " ", on and colors.gray or colors.lightGray, bg)
+        UI.text(x + 2, y, " " .. name .. " ", on and colors.black or colors.white, bg)
+        UI.text(x + 4 + #name, y, tostring(c.n) .. " ", on and colors.gray or colors.lightGray, bg)
         local id = c.id
         UI.hit(x, y, widths[i], 1, function() self.cat, self.page = id, 1 end)
         x = x + widths[i] + 1
     end
     if self.chipOff > 1 or last < #chips then
-        UI.button{ x = xMax - 6, y = y, w = 3, h = 1, text = "\17", disabled = self.chipOff <= 1,
-                   onClick = function() self.chipOff = math.max(1, self.chipOff - 1) end }
-        UI.button{ x = xMax - 2, y = y, w = 3, h = 1, text = "\16", disabled = last >= #chips,
-                   onClick = function() self.chipOff = math.min(#chips, self.chipOff + 1) end }
+        local off = self.chipOff
+        UI.button{ x = xMax - 6, y = y, w = 3, h = 1, text = "\17", disabled = off <= 1, onClick = function()
+            -- eine Seite zurueck: der Chip vor der Leiste wird der letzte sichtbare
+            local s = off - 1
+            while s > 1 and fits(s - 1) >= off - 1 do s = s - 1 end
+            self.chipOff = math.max(1, s)
+        end }
+        UI.button{ x = xMax - 2, y = y, w = 3, h = 1, text = "\16", disabled = last >= #chips, onClick = function()
+            self.chipOff = math.min(maxOff, last + 1)                      -- eine Seite vor
+        end }
     end
 end
 
@@ -6300,9 +6379,12 @@ Html.paras = { p = true, h1 = true, h2 = true, h3 = true, h4 = true, h5 = true, 
                blockquote = true, pre = true }
 
 -- Zerlegt HTML in eine Liste von Bausteinen:
---   { text, sp, link, st }  Wort (sp = Leerzeichen davor, st = 1 Ueberschrift)
+--   { text, sp, link, st, ind }  Wort (sp = Leerzeichen davor; st: 0 Text,
+--                           1 Ueberschrift, 2 Unterueberschrift, 4 Aufzaehlungspunkt,
+--                           5 Trennzeichen; ind = Einrueckung in Listen)
 --   { nl = 1|2 }            Zeilenumbruch / Leerzeile
 --   { pre = "..." }         Zeile mit festem Layout (Code)
+--   { hr = true }           Trennlinie
 -- Rueckgabe: Bausteine, Titel, Liste der Link-Adressen.
 function Html.parse(html, base, pause)
     html = Html.utf8(html):gsub("\r", "")
@@ -6334,7 +6416,7 @@ function Html.parse(html, base, pause)
 
     local out, links = {}, {}
     local brk, space, bullet = 0, false, false
-    local heading, pre, preBuf, cells = 0, 0, "", 0
+    local heading, hlevel, pre, preBuf, cells, depth = 0, 1, 0, "", 0, 0
     local link = nil
 
     local function newline()
@@ -6343,13 +6425,15 @@ function Html.parse(html, base, pause)
             brk, space = 0, false
         end
     end
-    local function word(text)
+    local function word(text, st)
         newline()
+        local ind = math.min(depth, 4) * 2
         if bullet then
-            out[#out + 1] = { text = "*", st = 0 }
+            out[#out + 1] = { text = "\7", st = 4, ind = ind }
             bullet, space = false, true
         end
-        out[#out + 1] = { text = text, sp = space, link = link, st = (heading > 0) and 1 or 0 }
+        out[#out + 1] = { text = text, sp = space, link = link, ind = ind,
+                          st = st or ((heading > 0) and ((hlevel <= 2) and 1 or 2) or 0) }
     end
     local function flushPre()
         if brk == 2 and #out > 0 then out[#out + 1] = { nl = 2 } end
@@ -6421,22 +6505,27 @@ function Html.parse(html, base, pause)
             elseif name == "td" or name == "th" then
                 if not closing then
                     if cells > 0 then
-                        word("|")
+                        word("|", 5)
                         space = true
                     end
                     cells = cells + 1
                 end
+            elseif name == "ul" or name == "ol" then
+                depth = closing and math.max(0, depth - 1) or (depth + 1)
+                mark(1)
             elseif name and Html.paras[name] then
                 mark(2)
                 if name:sub(1, 1) == "h" and #name == 2 then
                     heading = closing and math.max(0, heading - 1) or (heading + 1)
+                    if not closing then hlevel = tonumber(name:sub(2)) or 1 end
                 end
             elseif name and Html.breaks[name] then
                 mark(1)
                 if name == "tr" then cells = 0 end
                 if name == "li" and not closing then bullet = true end
                 if name == "hr" then
-                    word("--------")
+                    newline()
+                    out[#out + 1] = { hr = true }
                     mark(1)
                 end
             end
@@ -6461,6 +6550,7 @@ end
 
 -- Bricht die Bausteine auf die Bildschirmbreite um.
 -- Rueckgabe: Zeilen, jede eine Liste von { x, text, st, link }.
+-- Listen-Eintraege bekommen eine haengende Einrueckung.
 function Html.layout(tokens, width)
     local lines, cur, x = {}, {}, 0
     local function flush()
@@ -6471,6 +6561,9 @@ function Html.layout(tokens, width)
         if t.nl then
             flush()
             if t.nl >= 2 and #lines > 0 and #lines[#lines] > 0 then lines[#lines + 1] = {} end
+        elseif t.hr then
+            flush()
+            lines[#lines + 1] = { { x = 0, text = string.rep("\140", width), st = 5 } }
         elseif t.pre then
             flush()
             local s = t.pre:gsub("\t", "  ")
@@ -6481,15 +6574,18 @@ function Html.layout(tokens, width)
             end
         else
             local text = t.text
-            local need = (x > 0 and t.sp) and 1 or 0
-            if x > 0 and x + need + #text > width then
+            local ind = math.min(t.ind or 0, math.floor(width / 3))
+            local start = (t.st == 4) and math.max(0, ind - 2) or ind
+            if #cur == 0 and x == 0 then x = start end
+            local need = (#cur > 0 and t.sp) and 1 or 0
+            if #cur > 0 and x + need + #text > width then
                 flush()
-                need = 0
+                x, need = ind, 0
             end
             while #text > width - x do
                 lines[#lines + 1] = { { x = x, text = text:sub(1, width - x), st = t.st, link = t.link } }
                 text = text:sub(width - x + 1)
-                cur, x = {}, 0
+                cur, x = {}, ind
             end
             local prev = cur[#cur]
             if prev and need == 1 and prev.st == t.st and prev.link == t.link then
@@ -6505,48 +6601,180 @@ function Html.layout(tokens, width)
 end
 
 -- ---------- Browser ----------
+-- WEB v2 (OS 1.1.0): Startseite mit Suchfeld wie bei Google, Ergebnisliste,
+-- Leseansicht mit Rand, Verlauf (vor/zurueck), Lesezeichen und letzte Suchen.
 local Web = {
     id = "web", title = "WEB", order = 6,
-    page = nil,         -- angezeigte Seite (nil = Startseite)
-    loading = nil,      -- { url, back } solange eine Anfrage laeuft
+    page = nil,         -- angezeigte Seite (nil = Startseite); kind = "doc" | "search"
+    loading = nil,      -- { url, back, search } solange eine Anfrage laeuft
     error = nil, input = nil, shift = false,
-    scroll = 1, back = {}, cancelled = {}, bookmarks = {}, marks = { page = 1 },
+    scroll = 1, back = {}, fwd = {}, cancelled = {}, bookmarks = {}, recent = {}, marks = { page = 1 },
+    engine = "web", resPage = 1,
     dbFile = "/gts/web.db", maxSize = 1500000,
 }
 
-Web.tiles = {
-    { label = "WIKIPEDIA", color = colors.white, info = "Artikel suchen", ask = "Wikipedia - Suchbegriff:",
-      url = function(q) return "https://de.wikipedia.org/w/index.php?search=" .. textutils.urlEncode(q) end },
-    { label = "MINECRAFT WIKI", color = colors.lime, info = "Bloecke, Mobs, Rezepte", ask = "Minecraft Wiki - Suchbegriff:",
-      url = function(q) return "https://de.minecraft.wiki/w/Special:Search?search=" .. textutils.urlEncode(q) end },
-    { label = "ATM10 GUIDES", color = colors.purple, info = "allthemods.github.io",
-      url = function() return "https://allthemods.github.io/alltheguides/atm10/" end },
-    { label = "CC: TWEAKED DOKU", color = colors.lightBlue, info = "tweaked.cc",
-      url = function() return "https://tweaked.cc/" end },
-    { label = "PASTEBIN", color = colors.orange, info = "Code laden und speichern", ask = "Pastebin - Code (z.B. UzGHLbNC):",
+-- Prozent-Kodierung rueckgaengig ("%C3%A4" -> Bytes, "+" -> Leerzeichen)
+function Web.urlDecode(s)
+    return (tostring(s):gsub("+", " "):gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end))
+end
+
+-- HTML-Schnipsel -> einfacher Text (Ergebnisse, Auszuege)
+function Web.stripTags(s)
+    s = Html.utf8(tostring(s or "")):gsub("<[^>]*>", "")
+    return (Html.entity(s):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", ""))
+end
+
+-- Sichtbare Kurzform einer Adresse: "minecraft.wiki > w > Ancient_City"
+function Web.niceUrl(u)
+    local host, path = tostring(u):match("^%a+://([^/?#]+)([^?#]*)")
+    if not host then return tostring(u) end
+    host = host:gsub("^www%.", "")
+    local parts = { host }
+    for seg in path:gmatch("[^/]+") do parts[#parts + 1] = Web.urlDecode(seg) end
+    return Html.utf8(table.concat(parts, " \187 "))
+end
+
+-- ---------- Suchmaschinen ----------
+-- DuckDuckGo liefert eine reine HTML-Seite (ohne JavaScript); Wikipedia und
+-- das Minecraft Wiki haben eine Such-Schnittstelle (JSON).
+function Web.parseDDG(body)
+    local out, pos = {}, 1
+    while #out < 30 do
+        local s, e, tag = body:find('(<a[^>]-class="result__a"[^>]*>)', pos)
+        if not s then break end
+        local ce = body:find("</a>", e, true) or e
+        local nxt = body:find('class="result__a"', ce, true) or #body
+        local seg = body:sub(ce, nxt)
+        pos = ce + 1
+        local href = Html.entity(tag:match('href="([^"]*)"') or "")
+        local real = href:match("[?&]uddg=([^&]+)")
+        local url = real and Web.encHigh(Web.urlDecode(real)) or href
+        if url:sub(1, 2) == "//" then url = "https:" .. url end
+        if url:find("^https?://") and not url:find("duckduckgo%.com/y%.js") then
+            out[#out + 1] = { t = Web.stripTags(body:sub(e + 1, ce - 1)), u = url,
+                              s = Web.stripTags(seg:match('class="result__snippet"[^>]*>(.-)</a>') or "") }
+        end
+    end
+    return out
+end
+
+function Web.wikiParser(base)
+    return function(body)
+        local ok, data = pcall(textutils.unserializeJSON, body)
+        local hits = ok and type(data) == "table" and type(data.query) == "table" and data.query.search
+        local out = {}
+        for _, r in ipairs(type(hits) == "table" and hits or {}) do
+            if type(r) == "table" and type(r.title) == "string" then
+                local path = r.title:gsub(" ", "_"):gsub("[^%w%-%._~/:%(%),']", function(c) return ("%%%02X"):format(c:byte()) end)
+                out[#out + 1] = { t = Html.utf8(r.title), u = base .. path,
+                                  s = Web.stripTags(r.snippet) }
+            end
+        end
+        return out
+    end
+end
+
+function Web.wikiApi(api)
+    return function(q)
+        return api .. "?action=query&list=search&format=json&utf8=1&srlimit=30&srsearch=" .. textutils.urlEncode(q)          -- macht aus Latin-1 selbst UTF-8
+    end
+end
+
+Web.engines = {
+    { id = "web", label = "WEB", short = "WEB", name = "Web (DuckDuckGo)", parse = Web.parseDDG,
+      url = function(q) return "https://html.duckduckgo.com/html/?q=" .. textutils.urlEncode(q) end },
+    { id = "wiki", label = "WIKIPEDIA", short = "WIKI", name = "Wikipedia", parse = Web.wikiParser("https://de.wikipedia.org/wiki/"),
+      url = Web.wikiApi("https://de.wikipedia.org/w/api.php") },
+    { id = "mc", label = "MC WIKI", short = "MC", name = "Minecraft Wiki", parse = Web.wikiParser("https://de.minecraft.wiki/w/"),
+      url = Web.wikiApi("https://de.minecraft.wiki/api.php") },
+}
+Web.engineById = {}
+for _, en in ipairs(Web.engines) do Web.engineById[en.id] = en end
+
+-- Schnellzugriff auf der Startseite
+Web.quick = {
+    { label = "ATM10 GUIDES", short = "ATM10", url = "https://allthemods.github.io/alltheguides/atm10/" },
+    { label = "CC DOKU", short = "DOKU", url = "https://tweaked.cc/" },
+    { label = "PASTEBIN", short = "PASTE", ask = "Pastebin - Code (z.B. UzGHLbNC):",
       url = function(q) return "https://pastebin.com/raw/" .. q:gsub("[^%w]", "") end },
-    { label = "ADRESSE EINGEBEN", color = colors.cyan, info = "Beliebige Seite oeffnen", ask = "Adresse:",
-      url = function(q) return q end },
 }
 
+-- ---------- Speichern (Lesezeichen, letzte Suchen, Suchmaschine) ----------
 function Web:loadMarks()
     local t = Store.load(self.dbFile)
     if not t then return end
-    for _, b in ipairs(t) do
+    local marks = t.marks or t                      -- alte Fassung: nur eine Liste
+    for _, b in ipairs(type(marks) == "table" and marks or {}) do
         if type(b) == "table" and type(b.u) == "string" and #self.bookmarks < 30 then
             self.bookmarks[#self.bookmarks + 1] = { u = b.u, t = type(b.t) == "string" and b.t or b.u }
         end
     end
+    for _, q in ipairs(type(t.recent) == "table" and t.recent or {}) do
+        if type(q) == "string" and #self.recent < 8 then self.recent[#self.recent + 1] = q end
+    end
+    if Web.engineById[t.engine or ""] then self.engine = t.engine end
 end
 
-function Web:saveMarks() Store.save(self.dbFile, self.bookmarks) end
+-- Die Datei bleibt eine Liste (so liest sie auch eine aeltere Fassung nach einem
+-- Rueckschritt), dazu stehen letzte Suchen und Suchmaschine als Felder.
+function Web:saveMarks()
+    local t = { recent = self.recent, engine = self.engine }
+    for i, b in ipairs(self.bookmarks) do t[i] = b end
+    Store.save(self.dbFile, t)
+end
+
+-- Eingabe: Adresse oder Suchbegriff?
+function Web.isUrl(text)
+    text = tostring(text):gsub("^%s+", ""):gsub("%s+$", "")
+    if text:find("^%a[%w+.-]*://") then return true end
+    if text:find("%s") or text:find("%.%.") then return false end
+    local host = text:match("^([^/?#]+)")
+    return host ~= nil and host:find("^[%w%-%.]+%.%a%a+$") ~= nil       -- endet auf .de, .cc, .wiki ...
+end
+
+-- Eingaben sind Latin-1 (Zeichensatz von CC), Suchmaschinen erwarten UTF-8.
+function Web.utf8(s)
+    return (tostring(s):gsub("[\128-\255]", function(c)
+        local b = c:byte()
+        return string.char(192 + math.floor(b / 64), 128 + b % 64)
+    end))
+end
+
+-- Adressen bleiben ASCII: Bytes ab 128 werden %XX (UTF-8). latin = Text aus
+-- dem CC-Zeichensatz (getippt oder aus einer Seite), sonst schon UTF-8.
+function Web.encHigh(s, latin)
+    s = tostring(s)
+    if latin then s = Web.utf8(s) end
+    return (s:gsub("[%c\128-\255]", function(c) return ("%%%02X"):format(c:byte()) end))
+end
+
+function Web:submit(text)
+    text = tostring(text):gsub("^%s+", ""):gsub("%s+$", "")
+    if text == "" then return end
+    if Web.isUrl(text) then return self:go(text) end
+    self:search(text, self.engine)
+end
+
+-- Suche starten (Ergebnis kommt im Dienst an). fallback = Wikipedia, falls
+-- die Websuche nicht antwortet oder nichts Lesbares liefert.
+function Web:search(q, engineId, isBack)
+    local en = Web.engineById[engineId] or Web.engines[1]
+    if not isBack then                  -- vor/zurueck aendert die Liste nicht
+        self.engine = en.id
+        for i, r in ipairs(self.recent) do if r == q then table.remove(self.recent, i) break end end
+        table.insert(self.recent, 1, q)
+        while #self.recent > 8 do table.remove(self.recent) end
+        self:saveMarks()
+    end
+    self:go(en.url(q), isBack, { q = q, engine = en.id })
+end
 
 -- Laedt eine Adresse. Die Antwort kommt spaeter als Event (siehe service).
-function Web:go(url, isBack)
+function Web:go(url, isBack, search)
     url = tostring(url):gsub("^%s+", ""):gsub("%s+$", "")
     if url == "" then return end
     if not url:find("^%a[%w+.-]*://") then url = "https://" .. url end
-    url = url:gsub("#.*$", ""):gsub(" ", "%%20")
+    url = Web.encHigh(url:gsub("#.*$", ""):gsub(" ", "%%20"), true)
     if self.loading and self.loading.url == url then return end
     if not http then
         self.error = "HTTP ist auf diesem Server abgeschaltet."
@@ -6554,11 +6782,30 @@ function Web:go(url, isBack)
     end
     if self.loading then self.cancelled[self.loading.url] = true end
     self.error, self.input = nil, nil
-    self.loading = { url = url, back = isBack }
+    self.loading = { url = url, back = isBack, search = search }
     local ok, err = http.request({ url = url, binary = true })
     if not ok then
         self.loading = nil
         self.error = "Adresse abgelehnt: " .. tostring(err)
+    end
+end
+
+-- Eintrag fuer vor/zurueck: Adresse, Stelle und (bei Suchen) Begriff
+function Web:here()
+    local p = self.page
+    if not p then return { start = true } end
+    return { url = p.url, scroll = self.scroll, search = p.search, resPage = self.resPage }
+end
+
+function Web:open(entry, isBack)
+    if entry.start then
+        self.page, self.scroll = nil, 1
+    elseif entry.search then
+        self.restore, self.resRestore = entry.scroll, entry.resPage
+        self:search(entry.search.q, entry.search.engine, true)
+    else
+        self.restore = entry.scroll
+        self:go(entry.url, true)
     end
 end
 
@@ -6569,54 +6816,86 @@ function Web:goBack()
     elseif self.error then
         self.error = nil
     elseif #self.back > 0 then
-        local prev = table.remove(self.back)
-        self.restore = prev.scroll
-        self:go(prev.url, true)
-    else
+        self.fwd[#self.fwd + 1] = self:here()
+        self:open(table.remove(self.back), true)
+    elseif self.page then
+        self.fwd[#self.fwd + 1] = self:here()
         self.page, self.scroll = nil, 1
     end
 end
 
--- Antwort verarbeiten: Text holen, HTML zerlegen, Seite anzeigen.
+function Web:goForward()
+    if self.loading or #self.fwd == 0 then return end
+    self.back[#self.back + 1] = self:here()
+    self:open(table.remove(self.fwd), true)
+end
+
+function Web:home()
+    if self.loading then self.cancelled[self.loading.url] = true end
+    if self.page then self.back[#self.back + 1] = self:here() end
+    self.page, self.loading, self.error, self.scroll, self.fwd = nil, nil, nil, 1, {}
+end
+
+-- Antwort verarbeiten: Suchergebnisse oder Seite (HTML zerlegen bzw. Text).
 function Web:receive(req, handle)
     local raw = handle.readAll() or ""
     local headers = handle.getResponseHeaders and handle.getResponseHeaders() or {}
     pcall(handle.close)
-    local ctype = ""
-    for k, v in pairs(headers) do
-        if type(k) == "string" and k:lower() == "content-type" then ctype = tostring(v):lower() end
-    end
-    local head = raw:sub(1, 400):lower()
-    local isHtml = ctype:find("html", 1, true) or head:find("<!doctype html", 1, true) or head:find("<html", 1, true)
-    local body = (#raw > self.maxSize) and raw:sub(1, self.maxSize) or raw
-    local page = { url = req.url, raw = raw, plain = not isHtml, links = {} }
-    if isHtml then
-        page.tokens, page.title, page.links = Html.parse(body, req.url, function()
-            os.queueEvent("gts_pause")
-            os.pullEvent("gts_pause")
-        end)
+    local page
+    if req.search then
+        local en = Web.engineById[req.search.engine] or Web.engines[1]
+        local ok, results = pcall(en.parse, raw:sub(1, self.maxSize))
+        results = ok and results or {}
+        if #results == 0 and en.id == "web" and not req.search.fallback then
+            -- Websuche blockiert oder leer: Wikipedia fragen
+            local q = req.search.q
+            self:go(Web.engineById.wiki.url(q), req.back, { q = q, engine = "wiki", fallback = true })
+            return "again"
+        end
+        page = { kind = "search", url = req.url, search = req.search, results = results,
+                 title = "Suche: " .. Html.utf8(req.search.q), note = req.search.fallback and "Websuche gerade nicht erreichbar - Ergebnisse aus Wikipedia" or nil }
     else
-        page.tokens = Html.plain(body)
+        local ctype = ""
+        for k, v in pairs(headers) do
+            if type(k) == "string" and k:lower() == "content-type" then ctype = tostring(v):lower() end
+        end
+        local head = raw:sub(1, 400):lower()
+        local isHtml = ctype:find("html", 1, true) or head:find("<!doctype html", 1, true) or head:find("<html", 1, true)
+        local body = (#raw > self.maxSize) and raw:sub(1, self.maxSize) or raw
+        page = { kind = "doc", url = req.url, raw = raw, plain = not isHtml, links = {} }
+        if isHtml then
+            page.tokens, page.title, page.links = Html.parse(body, req.url, function()
+                os.queueEvent("gts_pause")
+                os.pullEvent("gts_pause")
+            end)
+        else
+            page.tokens = Html.plain(body)
+        end
+        local words = 0
+        for _, t in ipairs(page.tokens) do if t.text then words = words + 1 end if words > 5 then break end end
+        if isHtml and words <= 5 and raw:find("<script", 1, true) then
+            page.needsJs = true       -- (fast) leer: die Seite baut sich mit JavaScript auf
+        end
+        if #page.tokens == 0 then page.tokens = { { pre = "(Kein Text auf dieser Seite.)" } } end
+        if #raw > self.maxSize or #page.tokens >= 20000 then
+            page.tokens[#page.tokens + 1] = { nl = 2 }
+            page.tokens[#page.tokens + 1] = { pre = "[Seite gekuerzt]" }
+        end
     end
-    if #page.tokens == 0 then
-        page.tokens = { { pre = "(Kein Text auf dieser Seite.)" }, { pre = "Sie braucht vermutlich JavaScript." } }
-    end
-    if #raw > self.maxSize or #page.tokens >= 20000 then
-        page.tokens[#page.tokens + 1] = { nl = 2 }
-        page.tokens[#page.tokens + 1] = { pre = "[Seite gekuerzt]" }
-    end
-    if not req.back and self.page then
-        self.back[#self.back + 1] = { url = self.page.url, scroll = self.scroll }
-        while #self.back > 30 do table.remove(self.back, 1) end
+    if not req.back then
+        if self.page then
+            self.back[#self.back + 1] = self:here()
+            while #self.back > 30 do table.remove(self.back, 1) end
+        end
+        self.fwd = {}
     end
     self.page = page
     self.scroll = req.back and self.restore or 1
-    self.restore = nil
+    self.resPage = req.back and self.resRestore or 1
+    self.restore, self.resRestore = nil, nil
 end
 
--- Hintergrund-Dienst: wartet auf HTTP-Antworten. Laeuft als eigene Routine,
--- damit das Laden die Oberflaeche nicht anhaelt und auch dann ankommt,
--- wenn gerade eine andere App offen ist.
+-- Hintergrund-Dienst: wartet auf HTTP-Antworten (die Oberflaeche bleibt frei).
 function Web:service()
     while true do
         local ev, url, a, b = os.pullEvent()
@@ -6630,7 +6909,11 @@ function Web:service()
                 else
                     local code = type(b) == "table" and b.getResponseCode and b.getResponseCode()
                     if type(b) == "table" and b.close then pcall(b.close) end
-                    self.error = "Laden fehlgeschlagen: " .. tostring(a) .. (code and (" (HTTP " .. code .. ")") or "")
+                    if req.search and req.search.engine == "web" and not req.search.fallback then
+                        self:go(Web.engineById.wiki.url(req.search.q), req.back, { q = req.search.q, engine = "wiki", fallback = true })
+                    else
+                        self.error = "Laden fehlgeschlagen: " .. tostring(a) .. (code and (" (HTTP " .. code .. ")") or "")
+                    end
                 end
                 Kernel.invalidate()
             elseif self.cancelled[url] then
@@ -6644,7 +6927,7 @@ end
 
 function Web:save()
     local p = self.page
-    if not p then return end
+    if not (p and p.raw) then return end
     local name = p.url:gsub("[?#].*$", ""):match("([^/]+)/?$") or "seite"
     name = name:gsub("[^%w%._%-]", "_"):sub(1, 30)
     -- Lua-Dateien und Pastebin-Code landen direkt bei den LUA APPS, alles andere in /downloads.
@@ -6666,12 +6949,22 @@ function Web:save()
                   ok and colors.lime or colors.red)
 end
 
+function Web:isMarked()
+    local p = self.page
+    if not p then return false end
+    for _, b in ipairs(self.bookmarks) do if b.u == p.url then return true end end
+    return false
+end
+
+-- Merken bzw. wieder vergessen (Stern)
 function Web:mark()
     local p = self.page
-    if not p then return end
-    for _, b in ipairs(self.bookmarks) do
+    if not p or p.kind == "search" then return end
+    for i, b in ipairs(self.bookmarks) do
         if b.u == p.url then
-            Kernel.notify("Schon gemerkt", colors.orange)
+            table.remove(self.bookmarks, i)
+            self:saveMarks()
+            Kernel.notify("Lesezeichen entfernt", colors.lightGray)
             return
         end
     end
@@ -6719,8 +7012,19 @@ function Web:move(delta)
     self.scroll = math.max(1, self.scroll + delta)   -- obere Grenze setzt draw()
 end
 
-function Web:onScroll(dir) if self.page and not self.input then self:move(dir * 3) end end
-function Web:onChar(ch) self:insert(ch) end
+function Web:onScroll(dir)
+    if self.input or not self.page then return end
+    if self.page.kind == "search" then
+        self.resPage = math.max(1, self.resPage + dir)
+    else
+        self:move(dir * 3)
+    end
+end
+function Web:onChar(ch)
+    if self.input then return self:insert(ch) end
+    -- Tippen auf der Startseite beginnt gleich eine Suche
+    if not self.page and not self.loading then self:ask("Suchen oder Adresse:", ch, function(q) self:submit(q) end) end
+end
 function Web:onPaste(text) self:insert(text) end
 
 function Web:onKey(code)
@@ -6730,6 +7034,13 @@ function Web:onKey(code)
         return
     end
     if not self.page then return end
+    if self.page.kind == "search" then          -- Treffer: Pfeile blaettern die Seiten
+        if code == keys.up or code == keys.pageUp or code == keys.left then self.resPage = math.max(1, self.resPage - 1)
+        elseif code == keys.down or code == keys.pageDown or code == keys.right then self.resPage = self.resPage + 1
+        elseif code == keys.home then self.resPage = 1
+        elseif code == keys.backspace then self:goBack() end
+        return
+    end
     local page = self.rows or 10
     if code == keys.up then self:move(-1)
     elseif code == keys.down then self:move(1)
@@ -6749,107 +7060,252 @@ function Web:drawInput()
     if Kernel.display.touch then OSK.draw(h - OSK.height(), self) end
 end
 
-function Web:drawStart()
-    local w, bh, narrow = Kernel.w, UI.bh(), UI.narrow()
-    local top = UI.header("WEB", not narrow and "Startseite" or nil, {
-        { text = "ADRESSE", onClick = function() self:ask("Adresse:", "", function(q) self:go(q) end) end },
-    })
-    local cols = (w >= 36) and 2 or 1
-    local tw = math.floor((w - 1 - cols) / cols)
-    local th = narrow and 1 or bh
-    local tileRows = math.ceil(#self.tiles / cols)
-    -- Luecken zwischen den Kacheln nur, wenn darunter Platz fuer Lesezeichen bleibt
-    local gap = (not narrow and top + tileRows * (th + 1) + 5 <= Kernel.h) and 1 or 0
-    local y = top
-    for i, tile in ipairs(self.tiles) do
-        local col = (i - 1) % cols
-        local x = 2 + col * (tw + 1)
-        UI.card(x, y, tw, th)
-        UI.text(x, y, "\149", tile.color)
-        if th >= 2 then UI.text(x, y + 1, "\149", tile.color) end
-        UI.text(x + 2, y, tile.label:sub(1, tw - 3), colors.white)
-        if th >= 2 then UI.text(x + 2, y + 1, tile.info:sub(1, tw - 3), colors.lightGray)
-        elseif not narrow and #tile.label + #tile.info + 5 <= tw then
-            UI.text(x + 4 + #tile.label, y, tile.info, colors.lightGray)
-        end
-        UI.hit(x, y, tw, th, function()
-            if tile.ask then
-                self:ask(tile.ask, "", function(q) self:go(tile.url(q)) end)
-            else
-                self:go(tile.url())
+-- Schriftzug "GTS" (Pixel wie das Logo) + "Suche"
+function Web.drawLogo(y)
+    local S = Logo.sizes[3]
+    local word = { { "G", 0 }, { "T", S.W + S.g }, { "S", 2 * (S.W + S.g) } }
+    local pw = 3 * S.W + 2 * S.g
+    local cols, rows = math.ceil((pw + 2) / 2), math.ceil(S.H / 3)
+    local total = cols + 1 + 5
+    local x0 = math.floor((Kernel.w - total) / 2) + 1
+    UI.pixels(x0, y, cols, rows, function(px, py)
+        local x, yy = px - 2, py - 1
+        if yy >= 0 and yy < S.H then
+            for _, g in ipairs(word) do
+                local gx = x - g[2]
+                if gx >= 0 and gx < S.W and Logo.glyphs[g[1]](gx, yy, S) then
+                    return (yy < S.H * 0.45) and colors.white or colors.lightGray
+                end
             end
-        end)
-        if col == cols - 1 or i == #self.tiles then y = y + th + gap end
+        end
+        return colors.black
+    end)
+    UI.text(x0 + cols + 1, y + rows - 1, "Suche", colors.lightGray)
+    UI.text(x0 + cols + 6, y + rows - 1, "\7", colors.lime)
+    return y + rows
+end
+
+-- Startseite: ruhig und mittig - Suchfeld, Suchmaschine, letzte Suchen,
+-- Schnellzugriff und Lesezeichen.
+function Web:drawStart()
+    local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
+    local y = narrow and 2 or ((h >= 20) and 3 or 2)
+    if not narrow and h >= 16 then y = Web.drawLogo(y) + 1 else
+        UI.center(y, "GTS Suche", colors.white)
+        y = y + 2
     end
-    UI.surface = colors.black
-    if y + gap > Kernel.h - 1 then return end
-    y = y + 1 - gap
-    UI.section(2, y, "LESEZEICHEN (" .. #self.bookmarks .. ")", w - 3)
+    -- Suchfeld
+    local fw = narrow and (w - 2) or math.min(w - 8, 64)
+    local fx = math.floor((w - fw) / 2) + 1
+    UI.fill(fx, y, fw, 1, colors.brown)
+    UI.text(fx + 1, y, "\187", colors.lime, colors.brown)
+    UI.text(fx + 3, y, ((fw >= 36) and "Suchen oder Adresse eingeben ..." or "Suchen / Adresse ..."):sub(1, fw - 4), colors.lightGray, colors.brown)
+    UI.hit(fx, y, fw, 1, function() self:ask("Suchen oder Adresse:", "", function(q) self:submit(q) end) end)
+    y = y + 2
+    -- Suchmaschine waehlen (gilt fuer das Suchfeld)
+    local chips = {}
+    for _, en in ipairs(Web.engines) do
+        chips[#chips + 1] = { text = narrow and en.short or en.label, h = 1, style = (self.engine == en.id) and "primary" or nil,
+                              onClick = function() self.engine = en.id self:saveMarks() end }
+    end
+    local cw = -1
+    for _, c in ipairs(chips) do cw = cw + #c.text + 3 end
+    y = UI.flow(chips, math.max(2, math.floor((w - cw) / 2) + 1), y, w - 1) + 1
+    if y > h - bh - 1 then return end
+    -- Letzte Suchen
+    if #self.recent > 0 then
+        local label = narrow and "" or "Zuletzt:  "
+        local x = math.max(2, fx)
+        UI.text(x, y, label, colors.lightGray)
+        x = x + #label
+        for _, q in ipairs(self.recent) do
+            local shown = Html.utf8(q)
+            if x + #shown > w - 1 then break end
+            UI.text(x, y, shown, colors.white)
+            UI.hit(x, y, #shown, 1, function() self:search(q, self.engine) end)
+            x = x + #shown
+            if x + 3 <= w - 1 then UI.text(x + 1, y, "\183", colors.brown) end
+            x = x + 3
+        end
+        y = y + 2
+    end
+    if y > h - bh - 1 then return end
+    -- Schnellzugriff
+    local quick = {}
+    for _, qd in ipairs(Web.quick) do
+        quick[#quick + 1] = { text = narrow and qd.short or qd.label, h = 1, onClick = function()
+            if qd.ask then
+                self:ask(qd.ask, "", function(q) self:go(qd.url(q)) end)
+            else
+                self:go(qd.url)
+            end
+        end }
+    end
+    if not narrow then     -- schmal: Adressen gehen auch ins Suchfeld
+        quick[#quick + 1] = { text = "ADRESSE", h = 1, onClick = function() self:ask("Adresse:", "", function(q) self:go(q) end) end }
+    end
+    y = UI.flow(quick, math.max(2, fx), y, w - 1) + 1
+    if y + 1 > h - bh - 1 then return end
+    -- Lesezeichen
+    UI.section(math.max(2, fx), y, "LESEZEICHEN (" .. #self.bookmarks .. ")", (narrow and w - 2) or (fw - 1))
     if #self.bookmarks == 0 then
-        if y + 2 <= Kernel.h - 1 then
-            UI.text(2, y + 2, narrow and "Auf einer Seite: MERK" or "Auf einer Seite MERKEN tippen.", colors.lightGray)
+        if y + 2 <= h - bh - 1 then
+            UI.text(math.max(2, fx), y + 2, (narrow and "Auf einer Seite: \4" or "Auf einer Seite \4 MERKEN tippen."):sub(1, w - 2), colors.lightGray)
         end
         return
     end
+    local lx, lw = math.max(1, fx - 1), narrow and w or (fw + 2)
     UI.list(self.marks, self.bookmarks, y + 2, 2, function(b, by)
-        local tx, xr = UI.rowCard(by, 1)
-        local bx = UI.button{ x = xr - 2, y = by, w = 3, h = 1, text = "X", style = "danger",
+        UI.card(lx, by, lw, 1)
+        local tx, xr = lx + 2, lx + lw - 2
+        local bx = UI.button{ x = xr - 2, y = by, w = 3, h = 1, text = "X", style = "ghost", fg = colors.red,
                               confirm = "web:del:" .. b.u, onClick = function()
                                   for n, other in ipairs(self.bookmarks) do
                                       if other == b then table.remove(self.bookmarks, n) break end
                                   end
                                   self:saveMarks()
                               end } - 4
-        UI.text(tx, by, b.t:sub(1, bx - tx), colors.white)
+        UI.text(tx - 1, by, "\4", colors.yellow)
+        UI.text(tx + 1, by, b.t:sub(1, bx - tx - 1), colors.white)
         local host = b.u:match("^%a+://([^/]+)") or ""
-        if not narrow and #b.t + #host + 3 <= bx - tx then UI.text(tx + #b.t + 2, by, host, colors.lightGray) end
+        if not narrow and #b.t + #host + 4 <= bx - tx then UI.text(tx + #b.t + 3, by, host, colors.lightGray) end
         UI.hit(tx - 2, by, bx - tx + 2, 1, function() self:go(b.u) end)
+        UI.surface = colors.black
     end)
+end
+
+-- Kopf mit vor/zurueck, neu laden, Stern; darunter die Adress-/Suchzeile.
+-- Rueckgabe: erste Zeile fuer den Inhalt.
+function Web:drawBar()
+    local w, narrow = Kernel.w, UI.narrow()
+    local p = self.page
+    local busy = self.loading or self.error
+    local title = p and p.title or nil
+    if self.loading then title = "Lade ..." elseif self.error then title = "Fehler" end
+    local marked = self:isMarked()
+    local acts = {
+        { text = "\17", w = narrow and 2 or 3, onClick = function() self:goBack() end },
+        { text = "\16", w = narrow and 2 or 3, disabled = #self.fwd == 0 or self.loading ~= nil, onClick = function() self:goForward() end },
+    }
+    if not narrow then           -- schmal ist kein Platz: dort neu laden ueber die Adresszeile
+        acts[#acts + 1] = { text = "NEU LADEN", disabled = not p or busy, onClick = function()
+            self.fwd = {}
+            self:open(self:here(), true)
+        end }
+    end
+    acts[#acts + 1] = { text = narrow and "\4" or (marked and "\4 GEMERKT" or "\4 MERKEN"), w = narrow and 3 or nil,
+                        fg = marked and colors.yellow or nil, disabled = not p or busy or p.kind == "search", onClick = function() self:mark() end }
+    acts[#acts + 1] = { text = "START", onClick = function() self:home() end }
+    if p and p.raw then
+        acts[#acts + 1] = { text = narrow and "SICH" or "SICHERN", disabled = busy, onClick = function() self:save() end }
+    end
+    local top = UI.header("WEB", title or "", acts)
+    -- Such-/Adresszeile (antippen = aendern)
+    local ay = top - 1
+    local shown, edit
+    if self.loading then
+        shown = self.loading.search and Html.utf8(self.loading.search.q) or self.loading.url
+    elseif p and p.kind == "search" then
+        shown, edit = Html.utf8(p.search.q), p.search.q
+    else
+        shown = p and p.url or ""
+    end
+    edit = edit or shown
+    UI.fill(1, ay, w, 1, colors.brown)
+    UI.text(2, ay, "\187", colors.lime, colors.brown)
+    UI.text(4, ay, shown:sub(1, w - 5), colors.white, colors.brown)
+    UI.hit(1, ay, w, 1, function()
+        self:ask("Suchen oder Adresse:", edit, function(q) self:submit(q) end)
+    end)
+    return ay + 1
+end
+
+-- Ergebnisliste wie bei einer Suchmaschine: Titel, Adresse, Auszug.
+function Web:drawResults(y0)
+    local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
+    local p = self.page
+    local en = Web.engineById[p.search.engine] or Web.engines[1]
+    local cw = narrow and (w - 2) or math.min(w - 4, 90)
+    local x0 = narrow and 2 or 3
+    local y = y0
+    -- Suchmaschine fuer denselben Begriff wechseln
+    local chips = {}
+    for _, e in ipairs(Web.engines) do
+        chips[#chips + 1] = { text = narrow and e.short or e.label, h = 1, style = (e.id == en.id) and "primary" or nil,
+                              onClick = function() if e.id ~= en.id then self:search(p.search.q, e.id) end end }
+    end
+    y = UI.flow(chips, x0, y, w - 1)
+    if p.note then
+        UI.text(x0, y, p.note:sub(1, w - x0), colors.orange)
+        y = y + 1
+    end
+    local res = p.results
+    if #res == 0 then
+        UI.text(x0, y + 1, ("Keine Treffer fuer \"" .. Html.utf8(p.search.q) .. "\"."):sub(1, w - x0), colors.white)
+        UI.text(x0, y + 2, ("Andere Woerter oder andere Suchmaschine probieren."):sub(1, w - x0), colors.lightGray)
+        return
+    end
+    UI.text(x0, y, (#res .. " Ergebnisse \183 " .. en.name):sub(1, w - x0), colors.lightGray)
+    y = y + 2
+    -- je Ergebnis: Titel, Adresse, 1-2 Zeilen Auszug, Leerzeile
+    local bottom = h - bh - 1
+    local snipLines = (bottom - y >= 16) and 2 or 1
+    local per = math.max(1, math.floor((bottom - y + 1) / (3 + snipLines)))
+    local pages = math.max(1, math.ceil(#res / per))
+    self.resPage = math.max(1, math.min(self.resPage or 1, pages))
+    for i = 1, per do
+        local r = res[(self.resPage - 1) * per + i]
+        if not r then break end
+        UI.text(x0, y, r.t:sub(1, cw), colors.lightBlue)
+        UI.text(x0, y + 1, Web.niceUrl(r.u):sub(1, cw), colors.green)
+        local lines = UI.wrap(r.s ~= "" and r.s or "-", cw)
+        for k = 1, snipLines do
+            if lines[k] then
+                local t = lines[k]
+                if k == snipLines and lines[k + 1] then t = t:sub(1, cw - 3) .. "..." end
+                UI.text(x0, y + 1 + k, t, colors.lightGray)
+            end
+        end
+        local url = r.u
+        UI.hit(x0, y, cw, 2 + snipLines, function() self:go(url) end)
+        y = y + 3 + snipLines
+    end
+    -- Seiten wie bei Google:  <  1 2 3  >
+    if pages > 1 then
+        local by = h - bh
+        -- nur so viele Seitenzahlen wie passen, um die aktuelle herum
+        local room = w - 14
+        local a, b = self.resPage, self.resPage
+        local len = #tostring(a)
+        local grew = true
+        while grew do
+            grew = false
+            if b < pages and len + 1 + #tostring(b + 1) <= room then b = b + 1 len = len + 1 + #tostring(b) grew = true end
+            if a > 1 and len + 1 + #tostring(a - 1) <= room then a = a - 1 len = len + 1 + #tostring(a) grew = true end
+        end
+        local x = math.floor((w - (len + 12)) / 2) + 1
+        UI.button{ x = x, y = by, w = 5, text = "\17", disabled = self.resPage <= 1, onClick = function() self.resPage = self.resPage - 1 end }
+        local nx = x + 6
+        for i = a, b do
+            local on = (i == self.resPage)
+            UI.text(nx, by, tostring(i), on and colors.white or colors.lightBlue)
+            if on then UI.text(nx, by + ((bh >= 2) and 1 or 0), (bh >= 2) and "\131" or "", colors.lime) end
+            UI.hit(nx, by, #tostring(i), bh, function() self.resPage = i end)
+            nx = nx + #tostring(i) + 1
+        end
+        UI.button{ x = nx, y = by, w = 5, text = "\16", disabled = self.resPage >= pages, onClick = function() self.resPage = self.resPage + 1 end }
+    end
 end
 
 function Web:draw()
     if self.input then return self:drawInput() end
     local w, h, bh = Kernel.w, Kernel.h, UI.bh()
     local narrow = UI.narrow()
-    local busy = self.loading or self.error
-    if not self.page and not busy then return self:drawStart() end
-
-    -- Kopfzeile mit Knoepfen
-    local function nav(wide, short, fn, off)
-        return { text = narrow and short or wide, w = narrow and (#short + ((#short == 1) and 2 or 0)) or nil,
-                 onClick = fn, disabled = off }
-    end
-    local title = self.page and self.page.title or nil
-    if self.loading then title = "Lade ..." elseif self.error then title = "Fehler" end
-    local top = UI.header("WEB", title or "", {
-        nav("\17", "\17", function() self:goBack() end),
-        nav("START", "START", function()
-            if self.loading then self.cancelled[self.loading.url] = true end
-            self.page, self.loading, self.error, self.scroll, self.back = nil, nil, nil, 1, {}
-        end),
-        nav("NEU LADEN", "NEU", function()
-            local url = self.page.url
-            self.restore = self.scroll
-            self:go(url, true)
-        end, not self.page or busy),
-        nav("MERKEN", "MERK", function() self:mark() end, not self.page or busy),
-        nav("SPEICHERN", "SICH", function() self:save() end, not self.page or busy),
-    })
-
-    -- Adresszeile (antippen = aendern)
-    local ay = top - 1
-    local url = (self.loading and self.loading.url) or (self.page and self.page.url) or ""
-    UI.fill(1, ay, w, 1, colors.brown)
-    UI.text(2, ay, url:sub(1, w - 2), colors.white, colors.brown)
-    UI.hit(1, ay, w, 1, function()
-        self:ask("Adresse:", url, function(q) self:go(q) end)
-    end)
-
-    local y0 = ay + 1
+    if not self.page and not self.loading and not self.error then return self:drawStart() end
+    local y0 = self:drawBar()
     if self.loading then
-        UI.text(3, y0 + 1, "Lade ...", colors.yellow)
-        UI.button{ x = 3, y = y0 + 3, w = 11, text = "ABBRUCH", style = "danger",
-                   onClick = function() self:goBack() end }
+        UI.text(3, y0 + 1, (self.loading.search and "Suche ..." or "Lade ..."), colors.yellow)
+        UI.button{ x = 3, y = y0 + 3, w = 11, text = "ABBRUCH", style = "danger", onClick = function() self:goBack() end }
         return
     end
     if self.error then
@@ -6861,22 +7317,33 @@ function Web:draw()
         UI.text(3, y + 1, ("\17 bringt dich zurueck."):sub(1, w - 4), colors.lightGray)
         return
     end
+    local p = self.page
+    if p.kind == "search" then return self:drawResults(y0) end
+    if p.needsJs then
+        UI.empty(y0 + 2, "Seite braucht JavaScript",
+                 "Apps wie YouTube oder Discord laufen im Text-Browser nicht. Tipp: dasselbe suchen und eine Wiki- oder Doku-Seite nehmen.")
+        return
+    end
 
-    -- Seitentext
+    -- Leseansicht: eine ruhige Spalte mit Rand (am Monitor hoechstens 90 breit)
     local bottom = h - bh - 1
     local rows = bottom - y0 + 1
-    local ox = narrow and 0 or 1           -- Rand links (nicht auf dem Pocket)
-    local lines = self:lines(w - 1 - ox)
+    local tw = narrow and (w - 1) or math.min(w - 4, 90)
+    local ox = narrow and 0 or math.floor((w - tw) / 2)
+    local lines = self:lines(tw)
     self.rows = rows
     self.scroll = math.max(1, math.min(self.scroll, math.max(1, #lines - rows + 1)))
     local first = self.scroll
-    local palette = { [0] = colors.white, [1] = colors.lime, [3] = colors.lightGray }
+    local palette = { [0] = colors.white, [1] = colors.lime, [2] = colors.white, [3] = colors.lightGray,
+                      [4] = colors.lime, [5] = colors.brown }
     for r = 0, rows - 1 do
         local line = lines[first + r]
         if not line then break end
         for _, seg in ipairs(line) do
             UI.text(1 + ox + seg.x, y0 + r, seg.text, seg.link and colors.lightBlue or palette[seg.st] or colors.white)
         end
+        -- Ueberschriften: kleiner Akzent-Strich am Rand
+        if not narrow and line[1] and line[1].st == 1 and ox >= 2 then UI.text(ox - 1, y0 + r, "\149", colors.lime) end
     end
     -- Link antippen. Trifft man knapp daneben in eine Luecke, zaehlt der
     -- naechste Link in der Zeile (bis 2 Zeichen Abstand).
@@ -6896,7 +7363,8 @@ function Web:draw()
     -- Fusszeile: Position und Blaettern
     local by = h - bh
     local last = math.min(#lines, first + rows - 1)
-    UI.text(2, by, (narrow and "" or "Zeile ") .. first .. "-" .. last .. "/" .. #lines, colors.lightGray)
+    local pct = math.floor(last * 100 / math.max(1, #lines))
+    UI.text(2, by, (narrow and "" or "Seite ") .. pct .. " %", colors.lightGray)
     if bh >= 2 then UI.bar(2, by + 1, math.min(20, w - 18), last / math.max(1, #lines), colors.lime) end
     UI.button{ x = w - 13, y = by, w = 6, text = "\30", disabled = first <= 1,
                onClick = function() self:move(-(rows - 1)) end }
@@ -8536,16 +9004,20 @@ Sys.HELP = {
               "PLANER: DD oder CHUNK an alle freien Turtles, Richtungen und Spuren verteilt er selbst.",
               "NAME und FARBE in der Turtle-Ansicht; die Farbe gilt auch auf der KARTE.",
               "FUNDE und KARTE zeigen, was die Turtles entdeckt haben.",
+              "KARTE: welche Richtung oben ist, stellt INFO > EINSTELLUNGEN > SCHWARM ein. GPS zeigt die letzte GPS-Messung je Turtle.",
               "Neue Turtle: DATEN > TURTLE-DISK schreiben und die Turtle daneben starten." },
     lager = { "Alle Kisten am Kabel (Wired Modem) als ein grosses Lager.",
               "Item antippen: Menge in die EIN/AUS-Kiste holen, Kategorie, Mindestmenge, Favorit.",
               "EINLAGERN leert die EIN/AUS-Kiste ins Lager.",
               "AUSWAHL: mehrere Items antippen und zusammen verschieben.",
-              "KATEGORIEN: eigene anlegen. Ein Mod-Ordner nimmt die ganze Mod mit, Vanilla-Items bleiben einzeln." },
+              "KATEGORIEN: eigene anlegen, mit \17 \16 die Reihenfolge in der Leiste aendern.",
+              "Ein Mod-Ordner nimmt die ganze Mod mit, Vanilla-Items bleiben einzeln." },
     data  = { "Disketten im Laufwerk: Notizen und Programme sichern oder kopieren.",
               "TURTLE-DISK richtet neue Turtles ein, GPS-DISK macht GPS-Sender.",
               "Aktionen mit Disketten fragen immer nach dem Sperrcode." },
-    web   = { "Textbrowser fuer Wikis, Dokus und Pastebin.", "Adresse antippen und eintippen, Links antippen." },
+    web   = { "Suchen wie bei Google: WEB, WIKIPEDIA oder MC WIKI waehlen, Begriff oder Adresse eintippen.",
+              "Treffer antippen oeffnet die Seite zum Lesen, Links darin antippen.",
+              "\4 MERKEN legt ein Lesezeichen an. \17 \16 = zurueck und vor, START = Suchseite." },
     calc  = { "Taschenrechner mit Prozent und Stapeln (64er).", "NETHER rechnet Koordinaten Oberwelt <-> Nether um." },
     nether = { "Rechnet Koordinaten zwischen Oberwelt und Nether um (geteilt bzw. mal 8).",
                "Die letzten Umrechnungen bleiben gespeichert." },
@@ -8819,6 +9291,11 @@ function Sys.verify(body, parts)
     return true
 end
 
+-- Angezeigte Version aus manifest.lua (ab 1.1.0 "release", davor nur "version").
+function Sys.rel(m)
+    return tostring((type(m) == "table") and (m.release or ("V" .. tostring(m.version))) or "?")
+end
+
 function Sys.updSource() return (Settings.get("updSrc") == "gist") and "gist" or "github" end
 
 -- Sucht nach einer neuen Fassung. quiet = automatische Suche (nur Mitteilung).
@@ -8834,7 +9311,8 @@ function Sys.updCheck(quiet)
             if not body then error(e, 0) end
             local v = body:match('local VERSION%s*=%s*"([^"]+)"')
             if not v or not body:find("GTS OS", 1, true) then error("Im Gist liegt kein GTS OS", 0) end
-            u.man, u.entry, u.body = { version = v, notes = {}, gist = true }, { file = "gist", size = #body }, body
+            u.man, u.entry, u.body = { version = v, release = body:match('local RELEASE%s*=%s*"([^"]+)"'), notes = {}, gist = true },
+                                     { file = "gist", size = #body }, body
         else
             local text, e = Sys.fetch(Sys.REPO .. "main/manifest.lua?t=" .. os.epoch("utc"))
             if not text then error(e, 0) end
@@ -8851,13 +9329,13 @@ function Sys.updCheck(quiet)
     if not ok then
         u.state, u.msg = "error", tostring(err)
     elseif verLess(VERSION, u.man.version) then
-        u.state, u.msg = "found", "V" .. u.man.version .. " ist da"
+        u.state, u.msg = "found", Sys.rel(u.man) .. " ist da"
         if quiet and Settings.get("updSeen") ~= u.man.version then
             Settings.set("updSeen", u.man.version)
-            Kernel.notify("Update V" .. u.man.version .. " verfuegbar", colors.yellow, "info", "update")
+            Kernel.notify("Update " .. Sys.rel(u.man) .. " verfuegbar", colors.yellow, "info", "update")
         end
     else
-        u.state, u.msg = "none", "Aktuell (V" .. VERSION .. ")"
+        u.state, u.msg = "none", "Aktuell (" .. RELEASE .. ")"
     end
     if quiet then Settings.set("updDay", os.date("%Y-%m-%d")) end
     Kernel.invalidate()
@@ -8876,7 +9354,7 @@ function Sys.updInstall()
         if self:find("^/disk") then error("Das OS laeuft von einer Diskette", 0) end
         local body = u.body
         if not body then
-            u.state, u.msg = "load", "Lade V" .. u.man.version .. " ..."
+            u.state, u.msg = "load", "Lade " .. Sys.rel(u.man) .. " ..."
             Kernel.invalidate()
             local e
             body, e = Sys.fetch(Sys.REPO .. "main/" .. u.entry.file .. "?t=" .. os.epoch("utc"), 90)
@@ -8904,7 +9382,8 @@ function Sys.updInstall()
             if pcall(fs.copy, self, Sys.UPD_OLD) then backup = Sys.UPD_OLD end
         end
         -- erst merken, dann schreiben: stirbt der PC mittendrin, weiss der naechste Start Bescheid
-        Store.save(Sys.UPD_DB, { from = VERSION, to = u.man.version, file = u.entry.file, src = u.man.gist and "gist" or "github",
+        Store.save(Sys.UPD_DB, { from = VERSION, to = u.man.version, fromRel = RELEASE, toRel = Sys.rel(u.man),
+                                 file = u.entry.file, src = u.man.gist and "gist" or "github",
                                  backup = backup, t = math.floor(os.epoch("utc") / 1000) })
         -- die alte Fassung bleibt im Speicher: klappt das Schreiben nicht, kommt sie sofort zurueck
         local old = Store.read(self)
@@ -8930,7 +9409,7 @@ function Sys.updInstall()
         Kernel.notify("Update: " .. tostring(err), colors.red, "info", "update")
     else
         u.state, u.msg = "done", "Installiert - Neustart ..."
-        Kernel.log("INFO", "Update auf V" .. u.man.version .. " installiert")
+        Kernel.log("INFO", "Update auf " .. Sys.rel(u.man) .. " installiert")
         Sys.rebootAt = os.clock() + 4
     end
     Kernel.invalidate()
@@ -8945,7 +9424,7 @@ function Sys.updBoot()
     local back = Store.load(Sys.UPD_BACK)
     if type(back) == "table" then
         pcall(fs.delete, Sys.UPD_BACK)
-        Kernel.notify("Update auf V" .. tostring(back.to) .. " lief nicht - V" .. VERSION .. " ist zurueck", colors.red, "info", "update")
+        Kernel.notify("Update auf " .. tostring(back.toRel or back.to) .. " lief nicht - " .. RELEASE .. " ist zurueck", colors.red, "info", "update")
     end
 end
 
@@ -8954,7 +9433,7 @@ function Sys.updConfirm()
     Sys.upd.pending = nil
     pcall(fs.delete, Sys.UPD_DB)
     pcall(fs.delete, Sys.UPD_OLD)
-    Kernel.notify("Update fertig: GTS OS V" .. VERSION, colors.lime, "info", "update")
+    Kernel.notify("Update fertig: GTS OS " .. RELEASE, colors.lime, "info", "update")
 end
 
 -- Nach einem Absturz der frischen Fassung: alte Fassung zurueck.
@@ -8972,7 +9451,7 @@ function Sys.updRollback(err)
     end
     if not ok and p.src == "github" and http and http.get and type(p.from) == "string" and type(p.file) == "string" then
         pcall(function()
-            local h = http.get(Sys.REPO .. "v" .. p.from .. "/" .. p.file, nil, true)
+            local h = http.get(Sys.REPO .. "v" .. tostring(p.fromRel or p.from) .. "/" .. p.file, nil, true)
             if not h then return end
             local body = h.readAll()
             h.close()
@@ -8985,9 +9464,9 @@ function Sys.updRollback(err)
         end)
     end
     pcall(fs.delete, Sys.UPD_DB)
-    if ok then Store.save(Sys.UPD_BACK, { from = p.from, to = p.to, err = tostring(err):sub(1, 120) }) end
+    if ok then Store.save(Sys.UPD_BACK, { from = p.from, to = p.to, toRel = p.toRel, err = tostring(err):sub(1, 120) }) end
     Sys.upd.pending = nil
-    return ok, p.from
+    return ok, p.fromRel or p.from
 end
 
 -- ---------- System-Check: Ampel + Tipp ----------
@@ -9060,8 +9539,8 @@ function Sys.checks()
     add("HTTP", http and "ok" or "warn", http and "an (WEB, UPDATE)" or "aus",
         (not http) and "In der CC: Tweaked-Config http aktivieren (fuer WEB und UPDATE)." or nil)
     local u = Sys.upd
-    if u.state == "found" then add("Update", "warn", "V" .. u.man.version .. " verfuegbar", "INFO > SYSTEM > UPDATE.")
-    elseif u.state == "none" then add("Update", "ok", "aktuell (V" .. VERSION .. ")") end
+    if u.state == "found" then add("Update", "warn", Sys.rel(u.man) .. " verfuegbar", "INFO > SYSTEM > UPDATE.")
+    elseif u.state == "none" then add("Update", "ok", "aktuell (" .. RELEASE .. ")") end
     if not READONLY then
         local list = Sys.backupList()
         if #list == 0 then add("Backup", "warn", "noch keins", "INFO > SYSTEM > BACKUP > JETZT SICHERN.")
@@ -9156,7 +9635,7 @@ function Sys.crashScreen(err, mon)
                     y = y + #tail + 2
                 end
                 if rolled then
-                    at(2, y, ("Das Update wurde zurueckgenommen: wieder V" .. tostring(oldV) .. "."):sub(1, w - 2), colors.lime)
+                    at(2, y, ("Das Update wurde zurueckgenommen: wieder " .. tostring(oldV) .. "."):sub(1, w - 2), colors.lime)
                     y = y + 1
                 elseif rolled == false then
                     at(2, y, ("Update fehlerhaft, alte Fassung nicht gefunden."):sub(1, w - 2), colors.orange)
@@ -9411,6 +9890,16 @@ function Info:settingRows()
             { text = "CHAT AN", style = chat and "primary" or nil, onClick = function() Settings.set("lagerChat", true) end },
             { text = "AUS", style = (not chat) and "primary" or nil, onClick = function() Settings.set("lagerChat", false) end } } }
     end
+    -- Karte drehen: oben = Blickrichtung, wenn man vor dem Monitor steht (F3: Facing)
+    if not PHONE then
+        local NAMES = { [0] = "Norden", "Osten", "Sueden", "Westen" }
+        local cur = tonumber(Settings.get("mapUp")) or 0
+        local list = {}
+        for i, l in ipairs({ "N", "O", "S", "W" }) do
+            list[i] = { text = l, style = (cur == i - 1) and "primary" or nil, onClick = function() Settings.set("mapUp", i - 1) end }
+        end
+        rows[#rows + 1] = { "Karte: oben", (NAMES[cur] or "Norden") .. (UI.narrow() and "" or " (Blick zum Monitor, F3 Facing)"), nil, list }
+    end
     -- Design (alle Ausgaben): Grundton und Akzent mit < >, dazu der Sternenhimmel
     local function cycle(key, list)
         local cur = 1
@@ -9433,7 +9922,7 @@ function Info:settingRows()
     local GROUP = { ["Schwarm-Passwort"] = "SICHERHEIT", ["Lager-Passwort"] = "SICHERHEIT", Sperrcode = "SICHERHEIT",
                     ["Auto-Sperre"] = "SICHERHEIT", ["Handy-Passwort"] = "SICHERHEIT", Vertraute = "SICHERHEIT",
                     ["Alarm-Radius"] = "SICHERHEIT", ["Disketten-Start"] = "SICHERHEIT",
-                    ["DD-Tunnel"] = "SCHWARM", ["CHUNK-Muell"] = "SCHWARM", ["PC-Position"] = "SCHWARM", ["Turtle-Warnungen"] = "SCHWARM",
+                    ["DD-Tunnel"] = "SCHWARM", ["CHUNK-Muell"] = "SCHWARM", ["PC-Position"] = "SCHWARM", ["Turtle-Warnungen"] = "SCHWARM", ["Karte: oben"] = "SCHWARM",
                     Besitzer = "ALLGEMEIN", Grundton = "DESIGN", Akzentfarbe = "DESIGN", Sternenhimmel = "DESIGN",
                     ["Auto-Einlagern"] = "LAGER", ["Knapp-Meldung"] = "LAGER" }
     for _, r in ipairs(rows) do r.g = r.g or GROUP[r[1]] or "SYSTEM" end
@@ -9472,9 +9961,19 @@ function Info:drawSettings()
     top = top + 2
     local rows = {}
     for _, r in ipairs(all) do if r.g == self.setGroup then rows[#rows + 1] = r end end
-    local ch = narrow and 2 or bh
+    -- schmal (Handy, Pocket): Name, Wert und Knoepfe je in einer eigenen Zeile;
+    -- PC ohne Monitor: Name + Knoepfe, darunter der Wert; Touch-Monitor: eine Zeile.
+    local mode = narrow and "stack" or ((bh == 1) and "two" or "one")
+    local ch = (mode == "stack") and 3 or ((mode == "two") and 2 or bh)
     UI.list(self.setPage, rows, top, ch + 1, function(r, y)
         local tx, xr = UI.rowCard(y, ch)
+        if mode ~= "one" then
+            local by = (mode == "stack") and (y + 2) or y
+            local bx = (#r[4] > 0) and UI.buttonsRight(r[4], by, xr) or (xr + 2)
+            UI.text(tx, y, r[1]:sub(1, ((mode == "stack") and xr or (bx - 2)) - tx + 1), colors.white)
+            UI.text(tx, y + 1, tostring(r[2]):sub(1, xr - tx + 1), r[3] or colors.lightGray)
+            return
+        end
         local bx = UI.buttonsRight(r[4], narrow and (y + 1) or y, xr)
         if #r[4] == 0 then bx = xr + 2 end
         local lw = narrow and 0 or 18
@@ -9516,7 +10015,7 @@ function Info:drawSystem()
     local tiles = {
         { id = "check", title = "SYSTEM-CHECK", value = (bad + warn == 0) and "alles in Ordnung" or ((bad + warn) .. " Hinweise"),
           dot = (bad > 0) and colors.red or ((warn > 0) and colors.yellow or colors.lime) },
-        { id = "update", title = "UPDATE", value = (u.state == "found") and ("V" .. u.man.version .. " bereit") or ("V" .. VERSION .. " installiert"),
+        { id = "update", title = "UPDATE", value = (u.state == "found") and (Sys.rel(u.man) .. " bereit") or (RELEASE .. " installiert"),
           dot = (u.state == "found") and colors.yellow or colors.lime },
     }
     if not READONLY then
@@ -9594,7 +10093,7 @@ function Info:drawUpdate()
     local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
     local u = Sys.upd
     local src = Sys.updSource()
-    local top = UI.header("UPDATE", not narrow and ("GTS OS V" .. VERSION .. ((EDITION == "pc") and "" or (" " .. EDITION))) or nil, {
+    local top = UI.header("UPDATE", not narrow and ("GTS OS " .. RELEASE .. ((EDITION == "pc") and "" or (" " .. EDITION))) or nil, {
         { text = "SUCHEN", style = (u.state ~= "found") and "primary" or nil, disabled = u.busy or not http,
           onClick = function() Kernel.spawn("update", function() Sys.updCheck(false) end) end },
         self:back(true),
@@ -9603,7 +10102,7 @@ function Info:drawUpdate()
     local stateColor = ({ found = colors.yellow, error = colors.red, none = colors.lime, done = colors.lime })[u.state] or colors.white
     y = self:kv(y, "Status", (not http) and "HTTP ist aus" or ((u.state == "idle") and "noch nicht gesucht" or u.msg),
                 (not http) and colors.red or stateColor)
-    y = self:kv(y, "Installiert", "V" .. VERSION)
+    y = self:kv(y, "Installiert", RELEASE)
     local srcButtons
     if EDITION == "pc" then
         srcButtons = {
@@ -9619,7 +10118,7 @@ function Info:drawUpdate()
     })
     y = y + 1
     if u.state == "found" and u.man then
-        UI.section(2, y, "NEU IN V" .. u.man.version, w - 3)
+        UI.section(2, y, "NEU IN " .. Sys.rel(u.man), w - 3)
         y = y + 1
         local n = 0
         for _, note in ipairs(type(u.man.notes) == "table" and u.man.notes or {}) do
@@ -9836,7 +10335,7 @@ function Info:sections()
     if term.isColour and term.isColour() then device = "Advanced " .. device end
 
     add("SYSTEM", {
-        { "GTS OS", "V" .. VERSION .. ((EDITION == "pocket") and " Pocket" or (PHONE and " Phone" or "")), colors.lime },
+        { "GTS OS", RELEASE .. ((EDITION == "pocket") and " Pocket" or (PHONE and " Phone" or "")), colors.lime },
         { "CraftOS", os.version and os.version():gsub("^CraftOS ", "") or "?" },
         { "CC: Tweaked", host:match("ComputerCraft ([%w%.%-]+)") or "?" },
         { "Minecraft", host:match("Minecraft ([%w%.%-]+)") or "?" },
@@ -9974,7 +10473,7 @@ function Info:service()
         if ok and type(x) == "number" then
             x, y, z = math.floor(x), math.floor(y), math.floor(z)
             self.gps = x .. " " .. y .. " " .. z
-            Geo.gps = { x = x, y = y, z = z }
+            Geo.gps, Geo.gpsT = { x = x, y = y, z = z }, os.clock()
         else
             self.gps = #Kernel.hw.modems > 0 and "keine Antwort" or "kein Modem"
         end
@@ -9997,7 +10496,7 @@ function Info:draw()
     if v then return self[v](self) end
     local w, h, bh = Kernel.w, Kernel.h, UI.bh()
     local narrow = UI.narrow()
-    local sub = not narrow and ("GTS OS V" .. VERSION .. "  |  " .. (os.getComputerLabel() or ("Computer #" .. os.getComputerID()))) or nil
+    local sub = not narrow and ("GTS OS " .. RELEASE .. "  |  " .. (os.getComputerLabel() or ("Computer #" .. os.getComputerID()))) or nil
     local top = UI.header("INFO", sub, {
         { text = narrow and "SETUP" or "EINSTELLUNGEN", style = Net.isDefault and "primary" or nil,
           onClick = function() self.view, self.setPage.page = "settings", 1 end },
@@ -10221,7 +10720,7 @@ end
 -- mit GTS.Apps.register{...} anmelden. Fehler darin landen nur im Log.
 local function loadPlugins()
     if not fs.isDir(CONFIG.appDir) then return end
-    local api = { VERSION = VERSION, CONFIG = CONFIG, Kernel = Kernel, UI = UI, Apps = Apps,
+    local api = { VERSION = VERSION, RELEASE = RELEASE, CONFIG = CONFIG, Kernel = Kernel, UI = UI, Apps = Apps,
                   Notes = Notes, Finds = Finds }
     local files = fs.list(CONFIG.appDir)
     table.sort(files)
@@ -10330,7 +10829,7 @@ local function main()
     end
 end
 
-print("Starte GTS OS V" .. VERSION .. "...")
+print("Starte GTS OS " .. RELEASE .. "...")
 local startDir = shell and shell.dir()
 local ok, err = pcall(main)
 if not ok then Kernel.crash = tostring(err) end
