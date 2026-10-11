@@ -1,5 +1,5 @@
 -- ======================================================================
--- GTS OS Claude 1.2.0 - Kernel, UI und Apps            (CC: Tweaked, MC 1.21.1)
+-- GTS OS Claude 1.2.1 - Kernel, UI und Apps            (CC: Tweaked, MC 1.21.1)
 -- by Jonsi
 -- ======================================================================
 -- Laeuft auf dem Advanced Computer, am liebsten mit Advanced Monitor
@@ -30,12 +30,12 @@
 -- ======================================================================
 
 -- Version: RELEASE wird angezeigt (1.1.0 = erstes Update der Vollversion,
--- 1.2.0 = Claude).
+-- 1.2.0 = Claude, 1.2.1 = Claude-Wegfindung neu und AUFRAEUMEN).
 -- VERSION ist die interne Update-Nummer: steigt mit jeder Fassung und muss
 -- groesser als "8.0" sein (so hiess die erste Vollversion), sonst findet ein
 -- dort installiertes OS das Update nicht. Nirgends angezeigt.
-local VERSION = "8.2"
-local RELEASE = "1.2.0"
+local VERSION = "8.3"
+local RELEASE = "1.2.1"
 local EDITION = "claude" -- "pc" in gts_os.lua
 local READONLY = (EDITION ~= "pc")      -- Pocket/Handy: nur anzeigen, keine Befehle
 local PHONE = (EDITION == "phone")      -- GTS Phone: Handy fuer Freunde (Lager, Notizen, Rechner ...)
@@ -1074,7 +1074,9 @@ function Store.write(path, text)
 end
 
 function Store.load(path)
-    for _, p in ipairs({ path, path .. ".bak" }) do
+    -- fehlt die Datei, aber "<datei>.neu" ist da, war das Speichern fast fertig
+    local list = fs.exists(path) and { path, path .. ".bak" } or { path .. ".neu", path .. ".bak" }
+    for _, p in ipairs(list) do
         local s = Store.read(p)
         local t = s and textutils.unserialize(s)
         if type(t) == "table" then return t end
@@ -4563,8 +4565,9 @@ function Claude:receive(id, msg)
     if x then
         local e = { m = clText(x.m, 10), s = clText(x.s, 40), tg = clText(x.tg, 16), said = clText(x.said, 120),
                     saidT = clNum(x.saidT), mute = clNum(x.mute), kn = clNum(x.kn), kills = clNum(x.kills),
-                    cv = clNum(x.cv), lv = clNum(x.lv), wp = clNum(x.wp), zn = clNum(x.zn), al = clText(x.al, 30),
-                    torches = clNum(x.torches), spy = x.spy ~= false, scan = clText(x.scan, 40), near = {}, mobs = {} }
+                    cv = clNum(x.cv), lv = clNum(x.lv), wp = clNum(x.wp), zn = clNum(x.zn), al = clText(x.al, 60),
+                    torches = clNum(x.torches), spy = x.spy ~= false, scan = clText(x.scan, 40), near = {}, mobs = {},
+                    sm = clText(x.sm, 4) }
         if type(x.b) == "table" then e.b = { d = clNum(x.b.d) or 0, n = clNum(x.b.n) or 0, k = clText(x.b.k, 8) } end
         for _, list in ipairs({ { "near", 6 }, { "mobs", 6 } }) do
             local src = x[list[1]]
@@ -4865,7 +4868,15 @@ function Claude:drawStatus(u)
         UI.text(x0, y, ("BAU " .. (e.b.k or "") .. " " .. e.b.d .. "/" .. e.b.n):sub(1, w - x0), colors.yellow)
         y = y + 1
     end
-    if e.spy == false then UI.text(x0, y, ("Spieler-Positionen aus (Server-Config playerSpy)"):sub(1, w - x0), colors.orange) y = y + 1 end
+    if run and e.al and e.al:find("^festgefahren") then
+        UI.text(x0, y, ("! " .. e.al):sub(1, w - x0), colors.orange)
+        y = y + 1
+    end
+    if e.spy == false then
+        local t = (e.sm == "box") and "playerSpy aus: Claude ortet langsamer" or "playerSpy aus: Spieler nur in der Naehe"
+        UI.text(x0, y, t:sub(1, w - x0), (e.sm == "box") and colors.lightGray or colors.orange)
+        y = y + 1
+    end
     if e.scan and e.scan ~= "" then UI.text(x0, y, ("Scanner: " .. e.scan):sub(1, w - x0), colors.orange) y = y + 1 end
     -- fehlende Ausruestung (Claude laeuft trotzdem, nur ohne das)
     if u.tools and run then
@@ -9866,7 +9877,7 @@ Sys.HELP = {
                "Er baut nie etwas ab, bleibt ueber Wasser, 100 Bloecke beim PC und weg von Create-Maschinen." },
     info  = { "Geraet, Funk, Speicher und Erweiterungen auf einen Blick.",
               "EINSTELLUNGEN: Passwoerter, Design, Lager, Schwarm.",
-              "SYSTEM: Check, Update, Backup, Papierkorb, Einrichtung und sicherer Modus.",
+              "SYSTEM: Check, Update, Backup, Papierkorb, Aufraeumen, Einrichtung und sicherer Modus.",
               "Die Uhr unten rechts antippen: alle Mitteilungen." },
 }
 
@@ -10078,6 +10089,7 @@ function Sys.diskCheck()
     if free < 60000 then
         -- erst selbst Platz schaffen: alter Papierkorb, altes Log, alte Backups
         Sys.trashDrop(nil, 86400)
+        pcall(Sys.clean, Sys.cleanScan())
         pcall(fs.delete, CONFIG.logFile .. ".alt")
         local list = Sys.backupList(true)
         for i = 2, #list do pcall(fs.delete, list[i].path) end
@@ -10091,6 +10103,131 @@ function Sys.diskCheck()
     elseif free > 60000 then
         Sys.lowDisk = false
     end
+end
+
+-- ---------- Aufraeumen (1.2.1) ----------
+-- Positivliste: nur Dateien, die das OS selbst anlegt und die nachweislich
+-- ueberfluessig sind. Unbekanntes wird nie angefasst, Daten des Nutzers
+-- (Notizen, Scripts, Disketten-Kopien) werden nur angezeigt.
+--   muell = weg damit (auch automatisch), frage = nur wenn man es auswaehlt.
+local function onHdd(p)
+    local ok, d = pcall(fs.getDrive, p)
+    if ok and d then return d == "hdd" end
+    return not (p:find("^rom") or p:find("^disk"))
+end
+local function cleanWalk(dir, depth, fn)
+    local ok, list = pcall(fs.list, dir)
+    if not ok then return end
+    for _, name in ipairs(list) do
+        local p = fs.combine(dir, name)
+        if onHdd(p) then
+            if fs.isDir(p) then
+                if depth > 0 then cleanWalk(p, depth - 1, fn) end
+            else
+                fn(p, name)
+            end
+        end
+    end
+end
+local function cleanSize(path)
+    if fs.isDir(path) then
+        local n = 0
+        cleanWalk(path, 4, function(p) local ok, k = pcall(fs.getSize, p) n = n + (ok and tonumber(k) or 0) end)
+        return n
+    end
+    local ok, n = pcall(fs.getSize, path)
+    return ok and n or 0
+end
+
+function Sys.cleanScan()
+    local items, seen = {}, {}
+    local function add(path, why, kind, act)
+        path = fs.combine(path, "")
+        if seen[path] or not fs.exists(path) then return end
+        seen[path] = true
+        items[#items + 1] = { path = path, why = why, kind = kind, act = act, size = cleanSize(path) }
+    end
+    local self = fs.combine(Sys.SELF or "startup.lua", "")
+    cleanWalk("", 5, function(p, name)
+        if name:sub(-4) == ".neu" then
+            -- halb geschrieben: nur wenn die Datei selbst heil daneben liegt
+            if fs.exists(p:sub(1, -5)) then add(p, "halb geschrieben (Absturz)", "muell") end
+        elseif name:sub(-4) == ".bak" and fs.exists(p:sub(1, -5)) and not p:find("^disk") then
+            local base = p:sub(1, -5)
+            local text = Store.read(base)
+            if text and type(textutils.unserialize(text)) == "table" then
+                add(p, "Sicherungskopie (kommt beim Speichern wieder)", "frage")
+            end
+        end
+    end)
+    add(CONFIG.logFile .. ".alt", "altes Log", "muell")
+    if not Sys.upd.pending and not fs.exists(Sys.UPD_DB) then
+        add(Sys.UPD_OLD, "alte OS-Fassung vom letzten Update", "muell")
+    end
+    -- alte OS-Kopien im Hauptordner (gross, GTS-Kopf, nicht die laufende Datei)
+    for _, name in ipairs(fs.list("")) do
+        local p = fs.combine(name, "")
+        if p ~= self and not fs.isDir(p) and onHdd(p) and (fs.getSize(p) or 0) > 100000 then
+            local h = fs.open(p, "r")
+            local head = h and ((h.readLine() or "") .. "\n" .. (h.readLine() or "")) or ""
+            if h then h.close() end
+            if type(head) == "string" and head:find("GTS OS", 1, true) and head:find("^%-%-") then
+                add(p, "alte Kopie von GTS OS", "frage")
+            end
+        end
+    end
+    local list = Sys.backupList(true)
+    for i = 2, #list do add(list[i].path, "aelteres Backup (" .. list[i].label .. ")", "frage") end
+    if #Sys.trashList() > 0 then add(Sys.TRASH_DIR, "Papierkorb leeren", "frage", "trash") end
+    table.sort(items, function(a, b)
+        if a.kind ~= b.kind then return a.kind == "muell" end
+        return a.size > b.size
+    end)
+    return items
+end
+
+-- Loescht die ausgewaehlten Eintraege. Rueckgabe: frei gewordene Bytes, Anzahl.
+function Sys.clean(items, pick)
+    local freed, n = 0, 0
+    for _, it in ipairs(items) do
+        local on
+        if pick then on = pick(it) else on = it.kind == "muell" end
+        if on then
+            if it.act == "trash" then
+                local k = Sys.trashDrop()
+                if k > 0 then n, freed = n + k, freed + it.size end
+            elseif fs.exists(it.path) and pcall(fs.delete, it.path) and not fs.exists(it.path) then
+                n, freed = n + 1, freed + it.size
+            end
+        end
+    end
+    if n > 0 then Kernel.log("INFO", "Aufgeraeumt: " .. n .. " Dateien, " .. fmtSize(freed) .. " frei") end
+    return freed, n
+end
+
+-- Wer belegt wie viel? (fuer AUFRAEUMEN)
+function Sys.usage()
+    local self = fs.combine(Sys.SELF or "startup.lua", "")
+    local groups = {
+        { "GTS OS", 0 }, { "Daten (Einstellungen, Lager ...)", 0 }, { "Backups", 0 }, { "Papierkorb", 0 },
+        { "Notizen", 0 }, { "Scripts / LUA APPS", 0 }, { "Logs", 0 }, { "Sonstiges", 0 },
+    }
+    local function grp(p)
+        if p == self then return 1 end
+        if p:find("^gts/backup/") or p:find("^backups/") then return 3 end
+        if p:find("^gts/papierkorb/") then return 4 end
+        if p:find("^gts/") then return 2 end
+        if p:find("^notes/") then return 5 end
+        if p:find("^scripts/") then return 6 end
+        if p:find("^sys/") then return 7 end
+        return 8
+    end
+    cleanWalk("", 6, function(p)
+        local g = groups[grp(p)]
+        local ok, n = pcall(fs.getSize, p)
+        g[2] = g[2] + (ok and tonumber(n) or 0)
+    end)
+    return groups
 end
 
 -- ---------- Ein-Knopf-Update (GitHub, Gist als Alternative) ----------
@@ -10405,6 +10542,13 @@ function Sys.service()
         if now >= nextDaily then
             nextDaily = now + 900
             Sys.trashDrop(nil, Sys.TRASH_DAYS * 86400)
+            if Settings.get("cleanAuto") ~= false and Settings.get("cleanDay") ~= os.date("%Y-%m-%d") then
+                Settings.set("cleanDay", os.date("%Y-%m-%d"))
+                local ok, freed, n = pcall(function() return Sys.clean(Sys.cleanScan()) end)
+                if ok and n and n > 0 and freed > 8000 then
+                    Kernel.notify("Aufgeraeumt: " .. fmtSize(freed) .. " frei", colors.lime, "info", "clean")
+                end
+            end
             if not READONLY and Settings.get("autoBackup") ~= false and Settings.get("backupDay") ~= os.date("%Y-%m-%d") then
                 local ok, msg = Sys.backupMake()
                 if not ok then Kernel.notify("Backup: " .. msg, colors.orange, "info", "backup") end
@@ -10556,7 +10700,7 @@ function Sys.crashScreen(err, mon)
 end
 
 local Info = { id = "info", title = "INFO", order = 11, page = 1, gps = nil, gpsBusy = false,
-               view = "info", setPage = { page = 1 }, input = nil, shift = false }
+               view = "info", setPage = { page = 1 }, sysPage = { page = 1 }, input = nil, shift = false }
 
 function Info:insert(text) Input.insert(self, text) end
 function Info:key(action) Input.key(self, action) end
@@ -10880,15 +11024,23 @@ function Info:drawSystem()
         tiles[#tiles + 1] = { id = "setup", title = "EINRICHTUNG", value = Settings.get("setupDone") and "erledigt" or "jetzt starten",
                               dot = Settings.get("setupDone") and colors.lime or colors.yellow }
     end
+    local free = fs.getFreeSpace("/")
+    tiles[#tiles + 1] = { id = "clean", title = "AUFRAEUMEN", value = (type(free) == "number") and (fmtSize(free) .. " frei") or "Speicher",
+                          dot = (type(free) == "number" and free < 60000) and colors.yellow or colors.lime }
     tiles[#tiles + 1] = { id = "safe", title = "SICHERER MODUS", value = Sys.safe and "an" or "aus", dot = Sys.safe and colors.orange or colors.lightGray }
     local cols = narrow and 1 or ((w >= 70) and 3 or 2)
-    local tw = math.floor((w - 2 - (cols - 1) * 2) / cols)
+    local tw = narrow and w or math.floor((w - 2 - (cols - 1) * 2) / cols)
     local th = narrow and 2 or 3
+    -- Kacheln reihenweise; passen nicht alle, wird geblaettert
+    local rowsList = {}
     for i, t in ipairs(tiles) do
-        local c, r = (i - 1) % cols, math.floor((i - 1) / cols)
-        local x, y = (narrow and 1 or 2) + c * (tw + 2), top + r * (th + 1)
-        if narrow then tw = w end
-        if y + th - 1 <= h - bh - 1 then
+        local r = math.floor((i - 1) / cols) + 1
+        rowsList[r] = rowsList[r] or {}
+        rowsList[r][#rowsList[r] + 1] = t
+    end
+    UI.list(self.sysPage, rowsList, top, th + 1, function(row, y)
+        for c, t in ipairs(row) do
+            local x = (narrow and 1 or 2) + (c - 1) * (tw + 2)
             UI.card(x, y, tw, th)
             UI.text(x + 1, y, "\7", t.dot)
             UI.text(x + 3, y, t.title:sub(1, tw - 5), colors.white)
@@ -10897,7 +11049,7 @@ function Info:drawSystem()
             UI.hit(x, y, tw, th, function() self.view = t.id self.setPage.page = 1 end)
             UI.surface = colors.black
         end
-    end
+    end)
 end
 
 function Info:drawCheck()
@@ -11080,6 +11232,72 @@ function Info:drawTrash()
         UI.text(tx, y, e.name:sub(1, room), colors.white)
         local info = fs.getDir(e.from) .. "  " .. Info.ago(e.t) .. "  " .. fmtSize(e.size)
         if #e.name + 2 + #info <= room then UI.text(tx + #e.name + 2, y, info, colors.lightGray) end
+    end)
+end
+
+-- AUFRAEUMEN: Muell (immer an), Rest nur auf Wunsch, darunter wer wie viel belegt
+function Info:drawClean()
+    local w, bh, narrow = Kernel.w, UI.bh(), UI.narrow()
+    if not self.cleanItems or os.clock() - (self.cleanT or -99) > 15 then
+        self.cleanItems, self.cleanUse, self.cleanT = Sys.cleanScan(), Sys.usage(), os.clock()
+        self.cleanSel = self.cleanSel or {}
+    end
+    local items, sel = self.cleanItems, self.cleanSel
+    local function on(it) if sel[it.path] ~= nil then return sel[it.path] end return it.kind == "muell" end
+    local total, count = 0, 0
+    for _, it in ipairs(items) do if on(it) then total, count = total + it.size, count + 1 end end
+    local top = UI.header("AUFRAEUMEN", not narrow and "Nur echter Muell - deine Dateien bleiben" or nil, {
+        { text = narrow and "LOS" or ("AUFRAEUMEN " .. fmtSize(total)), style = "primary", confirm = "clean", disabled = count == 0,
+          onClick = function()
+              local freed, n = Sys.clean(items, on)
+              self.cleanT, self.cleanSel = -99, {}
+              Kernel.notify(n .. " entfernt, " .. fmtSize(freed) .. " frei geworden", colors.lime)
+          end },
+        self:back(true),
+    })
+    local free, cap = fs.getFreeSpace("/"), nil
+    pcall(function() cap = fs.getCapacity("/") end)
+    local x0 = narrow and 1 or 2
+    if type(free) == "number" and type(cap) == "number" and cap > 0 then
+        UI.text(x0, top, ("Frei " .. fmtSize(free) .. " von " .. fmtSize(cap)):sub(1, w - x0), colors.white)
+        local bx = narrow and x0 or (x0 + 24)
+        local by = narrow and (top + 1) or top
+        UI.bar(bx, by, math.max(4, w - bx - 1), 1 - free / cap, (free < 60000) and colors.orange or colors.lime)
+        top = by + 2
+    end
+    -- Zeilen: Eintraege (Grund, Groesse, Pfad, Knopf), Automatik, Belegung
+    local rows = {}
+    for _, it in ipairs(items) do rows[#rows + 1] = { item = it } end
+    if #items == 0 then rows[1] = { text = "Kein Muell gefunden - alles sauber.", color = colors.lime } end
+    rows[#rows + 1] = { auto = true }
+    local used = {}
+    for _, g in ipairs(self.cleanUse or {}) do if g[2] > 0 then used[#used + 1] = g end end
+    for i = 1, #used, 2 do rows[#rows + 1] = { use = { used[i], used[i + 1] } } end
+    UI.list(self.setPage, rows, top, 3, function(r, y)
+        local tx, xr = UI.rowCard(y, 2)
+        if r.item then
+            local it, isOn = r.item, on(r.item)
+            local bx = UI.buttonsRight({ { text = isOn and "WEG" or "BLEIBT", style = isOn and "danger" or nil, h = 1,
+                                           onClick = function() sel[it.path] = not isOn end } }, y, xr)
+            local size = fmtSize(it.size)
+            UI.text(tx, y, it.why:sub(1, math.max(1, bx - tx - #size - 3)), it.kind == "muell" and colors.white or colors.lightGray)
+            UI.text(bx - #size - 1, y, size, colors.lightGray)
+            UI.text(tx, y + 1, it.path:sub(1, xr - tx + 1), colors.lightGray)
+        elseif r.auto then
+            local auto = Settings.get("cleanAuto") ~= false
+            local bx = UI.buttonsRight({
+                { text = "AN", h = 1, style = auto and "primary" or nil, onClick = function() Settings.set("cleanAuto", true) end },
+                { text = "AUS", h = 1, style = (not auto) and "primary" or nil, onClick = function() Settings.set("cleanAuto", false) end } }, y, xr)
+            UI.text(tx, y, ("Automatisch"):sub(1, bx - tx - 1), colors.white)
+            UI.text(tx, y + 1, (auto and "einmal am Tag, nur Muell" or "aus"):sub(1, xr - tx + 1), colors.lightGray)
+        elseif r.use then
+            for i, g in ipairs(r.use) do
+                local t = (g[1] .. ": " .. fmtSize(g[2]))
+                UI.text(tx, y + i - 1, t:sub(1, xr - tx + 1), colors.lightGray)
+            end
+        else
+            UI.text(tx, y, r.text:sub(1, xr - tx + 1), r.color or colors.white)
+        end
     end)
 end
 
@@ -11341,7 +11559,7 @@ end
 function Info:tick() return Kernel.app == self end   -- Laufzeit und Uhr laufen mit
 
 Info.VIEWS = { settings = "drawSettings", system = "drawSystem", check = "drawCheck", update = "drawUpdate",
-               backup = "drawBackup", trash = "drawTrash", setup = "drawSetup", safe = "drawSafe" }
+               backup = "drawBackup", trash = "drawTrash", setup = "drawSetup", safe = "drawSafe", clean = "drawClean" }
 
 function Info:draw()
     if self.input then return Input.draw(self) end

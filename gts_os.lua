@@ -1,5 +1,5 @@
 -- ======================================================================
--- GTS OS 1.2.0 - Kernel, UI und Apps            (CC: Tweaked, MC 1.21.1)
+-- GTS OS 1.2.1 - Kernel, UI und Apps            (CC: Tweaked, MC 1.21.1)
 -- by Jonsi
 -- ======================================================================
 -- Laeuft auf dem Advanced Computer, am liebsten mit Advanced Monitor
@@ -30,12 +30,12 @@
 -- ======================================================================
 
 -- Version: RELEASE wird angezeigt (1.1.0 = erstes Update der Vollversion,
--- 1.2.0 = Claude).
+-- 1.2.0 = Claude, 1.2.1 = Claude-Wegfindung neu und AUFRAEUMEN).
 -- VERSION ist die interne Update-Nummer: steigt mit jeder Fassung und muss
 -- groesser als "8.0" sein (so hiess die erste Vollversion), sonst findet ein
 -- dort installiertes OS das Update nicht. Nirgends angezeigt.
-local VERSION = "8.2"
-local RELEASE = "1.2.0"
+local VERSION = "8.3"
+local RELEASE = "1.2.1"
 local EDITION = "pc"     -- "pocket" in gts_pocket.lua
 local READONLY = (EDITION ~= "pc")      -- Pocket/Handy: nur anzeigen, keine Befehle
 local PHONE = (EDITION == "phone")      -- GTS Phone: Handy fuer Freunde (Lager, Notizen, Rechner ...)
@@ -1074,7 +1074,9 @@ function Store.write(path, text)
 end
 
 function Store.load(path)
-    for _, p in ipairs({ path, path .. ".bak" }) do
+    -- fehlt die Datei, aber "<datei>.neu" ist da, war das Speichern fast fertig
+    local list = fs.exists(path) and { path, path .. ".bak" } or { path .. ".neu", path .. ".bak" }
+    for _, p in ipairs(list) do
         local s = Store.read(p)
         local t = s and textutils.unserialize(s)
         if type(t) == "table" then return t end
@@ -3659,9 +3661,9 @@ text = text .. table.concat(good, ", ")
 return #bad == 0, text
 ]===],
     ["claude.lua"] = [===[
--- GTS-PROG claude 1
+-- GTS-PROG claude 2
 -- ======================================================================
--- CLAUDE - Begleit-Droide fuer die Basis              (GTS OS 1.2, Agent 5.4)
+-- CLAUDE - Begleit-Droide fuer die Basis              (GTS OS 1.2.1, Agent 5.4)
 -- Laeuft dauerhaft auf einer Turtle. Gedacht als Begleiter: folgt, bewacht,
 -- patrouilliert, baut Boeden/Daecher/Waende, craftet Fackeln, fuehrt ein
 -- Besucher-Log und redet - trocken, selten und nur, wenn es passt.
@@ -3810,9 +3812,14 @@ local function setCfg(k, v)
     writeT(DIR .. "/cfg.db", cfg)
     return true
 end
+-- Create-Bloecke ohne bewegliche Teile (Werkstationen, Lager, Deko, Rohre, Trichter):
+-- dort darf Claude hin. Alles andere von Create (Wellen, Raeder, Saegen, Bohrer,
+-- Lager, Pressen, Baender ...) gilt als Maschine: Abstand halten.
 local SAFE_CREATE = { "depot", "basin", "blaze_burner", "item_vault", "fluid_tank", "casing", "toolbox",
                       "clipboard", "seat", "crafting_blueprint", "display_board", "nixie", "placard", "railing",
-                      "scaffold", "ladder", "window", "glass", "door", "tiles", "bricks", "slab", "stairs" }
+                      "scaffold", "ladder", "window", "glass", "door", "tiles", "bricks", "slab", "stairs",
+                      "copycat", "funnel", "fluid_pipe", "chute", "tunnel", "sign", "lamp", "bars", "catwalk",
+                      "andesite_alloy_block", "zinc_block", "brass_block", "ore", "cut_", "polished_", "layered_" }
 
 -- Gedaechtnis: Leute, Wegpunkte, Sperrzonen, Bauecken
 local mem = readT(DIR .. "/mem.db") or {}
@@ -3824,7 +3831,7 @@ Log.list = type(mem.log) == "table" and mem.log or {}
 local memDirty = false
 local function saveMem()
     mem.log = Log.list
-    writeT(DIR .. "/mem.db", mem, true)
+    pcall(writeT, DIR .. "/mem.db", mem, true)          -- Speicher voll: lieber nicht speichern als abstuerzen
     memDirty, Log.dirty = false, false
 end
 
@@ -4009,17 +4016,57 @@ local function popcount(v)
     while v ~= 0 do v = band(v, v - 1) n = n + 1 end
     return n
 end
+-- Weit entfernte Sektionen vergessen (die 10 % am weitesten von Basis und
+-- Parkplatz), damit die Karte die Turtle nie vollschreibt. Rueckgabe: etwas entfernt?
+function Map.prune()
+    local list = {}
+    local px, pz = 0, 0
+    if cfg and cfg.park then px, pz = cfg.park.x, cfg.park.z end
+    for key in pairs(Map.sec) do
+        local sx, sy, sz = secXYZ(key)
+        local cx, cz = sx * 16 + 8, sz * 16 + 8
+        local d = min(abs(cx) + abs(cz), abs(cx - px) + abs(cz - pz))
+        if d > 24 then list[#list + 1] = { key = key, d = d } end
+    end
+    if #list == 0 then return false end
+    table.sort(list, function(a, b) return a.d > b.d end)
+    for i = 1, max(1, floor(#list / 10)) do
+        local s = Map.sec[list[i].key]
+        for j = 1, 128 do Map.known = Map.known - popcount(s.k[j]) end
+        Map.sec[list[i].key] = nil
+    end
+    cacheKey, cacheSec = nil, nil
+    Map.pruned = (Map.pruned or 0) + 1
+    return true
+end
+
 function Map.save()
-    local h = fs.open(DIR .. "/map.neu", "w")
-    if not h then return end
-    h.write("CLAUDE-MAP 1\n")
+    local lines, size = { "CLAUDE-MAP 1\n" }, 13
     for key, s in pairs(Map.sec) do
         local sx, sy, sz = secXYZ(key)
-        h.write(sx .. "," .. sy .. "," .. sz .. "|" .. encLayer(s.k) .. "|" .. encLayer(s.s) .. "|" .. encLayer(s.w) .. "|" .. encLayer(s.d) .. "\n")
+        local l = sx .. "," .. sy .. "," .. sz .. "|" .. encLayer(s.k) .. "|" .. encLayer(s.s) .. "|" .. encLayer(s.w) .. "|" .. encLayer(s.d) .. "\n"
+        lines[#lines + 1] = l
+        size = size + #l
     end
-    h.close()
-    if fs.exists(DIR .. "/map.db") then fs.delete(DIR .. "/map.db") end
-    fs.move(DIR .. "/map.neu", DIR .. "/map.db")
+    -- Platz: nach dem Speichern sollen noch 40 KB frei sein. Ist die Karte selbst
+    -- gross (ab 16 KB), vergisst Claude dafuer ferne Teile; sonst reichen 20 KB.
+    local free = fs.getFreeSpace(DIR)
+    local old = fs.exists(DIR .. "/map.db") and fs.getSize(DIR .. "/map.db") or 0
+    if type(free) == "number" and free + old - size < 40000 then
+        if size > 16000 and Map.prune() then
+            logEv("karte", "Speicher knapp: ferne Teile der Karte vergessen")
+            return Map.save()
+        end
+        if free + old - size < 20000 then Map.dirty, Map.savedT = false, now() return end   -- lieber gar nicht
+    end
+    local ok = pcall(function()
+        local h = fs.open(DIR .. "/map.neu", "w")
+        for _, l in ipairs(lines) do h.write(l) end
+        h.close()
+        if fs.exists(DIR .. "/map.db") then fs.delete(DIR .. "/map.db") end
+        fs.move(DIR .. "/map.neu", DIR .. "/map.db")
+    end)
+    if not ok then pcall(fs.delete, DIR .. "/map.neu") end
     Map.dirty, Map.savedT = false, now()
 end
 function Map.load()
@@ -4103,18 +4150,69 @@ Sense.HOSTILE = HOSTILE
 
 local function compassKnown() local _, c = T.world() return c ~= nil end
 
+-- Ohne playerSpy (Server-Config): Position ueber die Frage "steht Spieler X in
+-- diesem Kasten?" (isPlayerInCoords, Welt-Koordinaten) - je Achse halbieren.
+-- Mit einer Schaetzung (letzte Position) reichen etwa 13 Abfragen, sonst etwa 24.
+function Sense.locate(p, name, guess)
+    if type(p.isPlayerInCoords) ~= "function" then return nil end
+    local wx, wy, wz = T.relToWorld(pos.x, pos.y, pos.z)
+    if not wx then return nil end
+    local function inBox(l, h)
+        local ok, r = pcall(p.isPlayerInCoords, { x = l.x, y = l.y, z = l.z }, { x = h.x, y = h.y, z = h.z }, name)
+        return ok and r == true
+    end
+    local lo, hi
+    if guess then
+        lo = { x = guess.x - 8, y = guess.y - 8, z = guess.z - 8 }
+        hi = { x = guess.x + 8, y = guess.y + 8, z = guess.z + 8 }
+        if not inBox(lo, hi) then lo = nil end
+    end
+    if not lo then
+        lo = { x = wx - 128, y = wy - 64, z = wz - 128 }
+        hi = { x = wx + 128, y = wy + 64, z = wz + 128 }
+        if not inBox(lo, hi) then return nil end
+    end
+    for _, ax in ipairs({ "x", "z", "y" }) do
+        local a, b = lo[ax], hi[ax]                       -- Spieler liegt in [a, b)
+        while b - a > 1 do
+            local m = floor((a + b) / 2)
+            local l2 = { x = lo.x, y = lo.y, z = lo.z }
+            local h2 = { x = hi.x, y = hi.y, z = hi.z }
+            l2[ax], h2[ax] = a, m
+            if inBox(l2, h2) then b = m else a = m end
+        end
+        lo[ax], hi[ax] = a, a + 1
+    end
+    return { x = lo.x, y = lo.y, z = lo.z }
+end
+
 -- Spieler in der Naehe (und gezielt gesuchte, z.B. das Folge-Ziel)
 function Sense.pollPlayers(extra)
     local res, err = T.use("player", function(p)
         local list = p.getPlayersInRange(64)
         if type(list) ~= "table" then list = {} end
         local want, info = {}, {}
-        for _, n in ipairs(list) do if type(n) == "string" then want[n] = true end end
-        for _, n in ipairs(extra or {}) do if type(n) == "string" then want[n] = true end end
-        for n in pairs(want) do
-            local ok, r = pcall(p.getPlayerPos, n)
-            if ok and type(r) == "table" and tonumber(r.x) then info[n] = r
-            elseif not ok then Sense.noSpy = true end           -- Config: playerSpy aus
+        for _, n in ipairs(extra or {}) do if type(n) == "string" then want[#want + 1] = n end end
+        for _, n in ipairs(list) do if type(n) == "string" then want[#want + 1] = n end end
+        local located = 0
+        for _, n in ipairs(want) do
+            if not info[n] then
+                local r
+                if not Sense.noSpy then
+                    local ok, res2 = pcall(p.getPlayerPos, n)
+                    if ok and type(res2) == "table" and tonumber(res2.x) then r = res2
+                    elseif not ok then Sense.noSpy = true end           -- Config: playerSpy aus
+                end
+                -- ohne playerSpy: hoechstens zwei Spieler je Runde orten (Ziel zuerst)
+                if not r and Sense.noSpy and located < 2 then
+                    local e = Sense.players[n]
+                    local guess = e and e.wx and now() - (e.t or 0) < 30 and { x = e.wx, y = e.wy, z = e.wz } or nil
+                    r = Sense.locate(p, n, guess)
+                    located = located + 1
+                    if r then r.located = true end
+                end
+                if r then info[n] = r end
+            end
         end
         return { names = list, info = info }
     end)
@@ -4123,29 +4221,33 @@ function Sense.pollPlayers(extra)
     local t = now()
     local seenNow = {}
     for _, n in ipairs(res.names) do seenNow[n] = true end
-    for n, r in pairs(res.info) do
-        local e = Sense.players[n] or { name = n }
-        local wx, wy, wz = floor(r.x), floor(r.y), floor(r.z)
-        if e.wx and e.t and t - e.t > 0.2 then
-            e.speed = hdist(wx, wz, e.wx, e.wz) / (t - e.t)
-        end
-        e.wx, e.wy, e.wz, e.t = wx, wy, wz, t
-        local x, y, z = T.worldToRel(wx, wy, wz)
-        e.x, e.y, e.z = x, y, z
-        e.d = x and hdist(x, z, pos.x, pos.z) or nil
-        e.dy = y and (y - pos.y) or nil
-        e.hp, e.hpMax = tonumber(r.health), tonumber(r.maxHealth)
-        e.near = seenNow[n] == true
-        Sense.players[n] = e
-    end
+    for n, r in pairs(res.info) do Sense.setPlayer(n, r.x, r.y, r.z, t, seenNow[n] == true, r) end
     for n, e in pairs(Sense.players) do
-        if not res.info[n] then
-            e.near = false
+        if not res.info[n] and not (e.fromEnv and t - (e.t or 0) < 6) then
+            e.near = seenNow[n] == true and e.near or false
             if t - (e.t or 0) > 600 then Sense.players[n] = nil end
         end
     end
     Sense.names = res.names
     return true
+end
+
+-- Position eines Spielers merken (Welt-Koordinaten, dazu relativ zur Basis)
+function Sense.setPlayer(n, rx, ry, rz, t, near, extra)
+    local e = Sense.players[n] or { name = n }
+    local wx, wy, wz = floor(rx), floor(ry), floor(rz)
+    if e.wx and e.t and t - e.t > 0.2 then
+        e.speed = hdist(wx, wz, e.wx, e.wz) / (t - e.t)
+    end
+    e.wx, e.wy, e.wz, e.t = wx, wy, wz, t
+    local x, y, z = T.worldToRel(wx, wy, wz)
+    e.x, e.y, e.z = x, y, z
+    e.d = x and hdist(x, z, pos.x, pos.z) or nil
+    e.dy = y and (y - pos.y) or nil
+    if extra then e.hp, e.hpMax = tonumber(extra.health), tonumber(extra.maxHealth) end
+    e.near = near
+    Sense.players[n] = e
+    return e
 end
 
 -- Monster (Environment Detector) und alle 20 s Wetter und Licht.
@@ -4175,13 +4277,31 @@ function Sense.pollEnv(withMobs)
     end
     if withMobs and type(res.list) == "table" and compassKnown() then
         local mobs, people = {}, {}
+        local online = {}
+        for _, n in ipairs(Sense.names or {}) do online[n] = true end
         for _, e in ipairs(res.list) do
             if type(e) == "table" and type(e.name) == "string" and tonumber(e.x) then
                 local ox, oy, oz = T.offsetToRel(floor(e.x), floor(e.y + 0.01), floor(e.z))
                 local rec = { name = e.name, x = pos.x + ox, y = pos.y + oy, z = pos.z + oz,
                               hp = tonumber(e.health), id = e.id }
                 if HOSTILE[e.name:lower()] then mobs[#mobs + 1] = rec
-                elseif Sense.players[e.name] then people[#people + 1] = rec end
+                elseif Sense.players[e.name] or online[e.name] then
+                    people[#people + 1] = rec
+                    -- ohne playerSpy und ohne Welt-Koordinaten: Spieler in der Naehe so sehen
+                    local pe = Sense.players[e.name]
+                    if Sense.noSpy and not (pe and pe.wx and now() - (pe.t or 0) < 3) then
+                        local wx, wy, wz = T.relToWorld(rec.x, rec.y, rec.z)
+                        if wx then
+                            Sense.setPlayer(e.name, wx, wy, wz, now(), true, { health = e.health, maxHealth = e.maxHealth })
+                        else
+                            pe = pe or { name = e.name }
+                            pe.x, pe.y, pe.z, pe.t, pe.near = rec.x, rec.y, rec.z, now(), true
+                            pe.d = hdist(rec.x, rec.z, pos.x, pos.z)
+                            Sense.players[e.name] = pe
+                        end
+                        Sense.players[e.name].fromEnv = true
+                    end
+                end
             end
         end
         Sense.mobs, Sense.mobT, Sense.bodies = mobs, now(), people
@@ -4189,21 +4309,35 @@ function Sense.pollEnv(withMobs)
     return true
 end
 
--- Geo-Scan (Radius 8 ist kostenlos, Abklingzeit 2 s)
+-- Geo-Scan (Radius 8 ist kostenlos, Abklingzeit 2 s). Klappt er nicht, fliegt
+-- Claude trotzdem weiter (Blick ins naechste Feld) und versucht es spaeter wieder.
 function Sense.scan()
-    if not compassKnown() then Sense.scanErr = "Himmelsrichtung unbekannt" return false end
+    if not compassKnown() then
+        Sense.scanErr, Sense.scanBroken = "Himmelsrichtung unbekannt (Kompass/GPS)", now() + 30
+        return false
+    end
     local wait = 2.1 - (now() - Sense.scanT)
     if wait > 0 then sleep(wait) end
-    local list, err = T.scan(8)
+    local list, err = T.use("scanner", function(p)
+        local l, e = p.scan(8)
+        if type(l) ~= "table" and tostring(e):lower():find("cooldown") then
+            sleep(2.1)                                    -- angelegt lassen und kurz warten
+            l, e = p.scan(8)
+        end
+        return l, e
+    end)
     Sense.scanT = now()
-    if type(list) ~= "table" and tostring(err):lower():find("cooldown") then
-        sleep(1.2)
-        list, err = T.scan(8)
-        Sense.scanT = now()
+    if type(list) ~= "table" then
+        Sense.scanErr = tostring(err or "keine Antwort")
+        Sense.scanBroken = now() + 20
+        if now() - (Sense.scanLogT or -999) > 300 then
+            Sense.scanLogT = now()
+            logEv("scan", "Scanner: " .. Sense.scanErr)
+        end
+        return false
     end
-    if type(list) ~= "table" then Sense.scanErr = tostring(err) return false end
     Map.scan(list, 8)
-    Sense.scanErr = nil
+    Sense.scanErr, Sense.scanBroken = nil, nil
     return true
 end
 
@@ -4290,9 +4424,19 @@ function Nav.ok(x, y, z, strict, slack, escape)
 end
 function Nav.here() return Map.state(pos.x, pos.y, pos.z) end
 
--- A* in 3D. goal(x,y,z) -> true am Ziel; (hx,hy,hz) fuer die Schaetzung.
--- Unbekannte Felder kosten mehr (gefahren wird dort erst nach einem Scan).
--- Rueckgabe: Liste von Feldern (erstes = Startfeld) oder nil, bestes Feld.
+-- Wegfindung wie bei NPCs in Spielen (Minecraft-Mobs, Roblox-NPCs, Roboter
+-- mit D* Lite):
+--   - optimistisch planen: unbekannte Felder gelten als wahrscheinlich frei
+--     (nur etwas teurer als bekannte); was im Weg ist, merkt Claude beim
+--     Fliegen (Scan, wenn faellig, sonst der Blick ins naechste Feld),
+--   - Ueberraschung unterwegs: neu planen,
+--   - Ziel in einem Block (Wegpunkt im Huegel): das naechste freie Feld
+--     darueber oder daneben, sonst so nah wie moeglich ran (Teilweg),
+--   - "festgefahren" nur, wenn Claude sich gar nicht mehr bewegen kann.
+local W_H, C_UNKNOWN, C_TURN = 1.5, 0.5, 0.3
+
+-- Gewichtetes A* in 3D. goal(x,y,z) -> true am Ziel; (hx,hy,hz) fuer die Schaetzung.
+-- Rueckgabe: Felder (erstes = Startfeld) | nil; ganz bis zum Ziel?; Platz zum Fliegen?
 function Nav.plan(goal, hx, hy, hz, opts)
     opts = opts or {}
     local sx, sy, sz = pos.x, pos.y, pos.z
@@ -4330,7 +4474,7 @@ function Nav.plan(goal, hx, hy, hz, opts)
     end
     local function h(x, y, z) return abs(x - hx) + abs(y - hy) + abs(z - hz) end
     local bestK, bestH = startK, h(sx, sy, sz)
-    local limit, exp = opts.limit or 6000, 0
+    local limit, exp = opts.limit or 4000, 0
     local found
     while #hk > 0 do
         local k = pop()
@@ -4348,32 +4492,32 @@ function Nav.plan(goal, hx, hy, hz, opts)
                 local d = NB[i]
                 local nx, ny, nz = x + d[1], y + d[2], z + d[3]
                 local nk = K(nx, ny, nz)
-                if not closed[nk] and Nav.ok(nx, ny, nz, not opts.unknown, slack, opts.escape) then
+                if not closed[nk] and Nav.ok(nx, ny, nz, opts.known, slack, opts.escape) then
                     local st = Map.state(nx, ny, nz)
-                    local cost = 1 + ((st == 0) and 3 or 0) + ((st >= 3) and 6 or 0)
-                    if dk and dk ~= i and i <= 4 then cost = cost + 0.6 end     -- Drehen kostet Zeit
+                    local cost = 1 + ((st == 0) and C_UNKNOWN or 0) + ((st >= 3) and 6 or 0)
+                    if dk and dk ~= i then cost = cost + C_TURN end
                     local ng = gk + cost
                     if not g[nk] or ng < g[nk] - 1e-9 then
                         g[nk], came[nk], dirOf[nk] = ng, k, i
-                        push(nk, ng + h(nx, ny, nz))
+                        push(nk, ng + W_H * h(nx, ny, nz))
                     end
                 end
             end
         end
     end
-    local endK = found or (opts.partial and bestK ~= startK and bestK) or nil
-    if not endK then return nil end
+    local endK = found or ((bestK ~= startK) and bestK) or nil
+    if not endK then return nil, false, exp > 1 end
     local path, k = {}, endK
     while k do
         local x, y, z = UK(k)
         table.insert(path, 1, { x = x, y = y, z = z })
         k = came[k]
     end
-    return path, found ~= nil
+    return path, found ~= nil, true
 end
 
 -- Ein Schritt ins Nachbarfeld. Nie abbauen: steht etwas im Weg, wird es
--- nur in die Karte eingetragen. Rueckgabe: true oder false, "block"/"wesen"/"tank".
+-- nur in die Karte eingetragen. Rueckgabe: true oder false, "block"/"wasser"/"wesen"/"tank".
 function Nav.stepTo(x, y, z)
     local dx, dy, dz = x - pos.x, y - pos.y, z - pos.z
     local dir = (dy == 1) and "up" or ((dy == -1) and "down" or "fwd")
@@ -4389,81 +4533,147 @@ function Nav.stepTo(x, y, z)
     local mv = (dir == "up") and turtle.up or ((dir == "down") and turtle.down or turtle.forward)
     if mv() then
         Map.block(pos.x, pos.y, pos.z, nil)
+        Nav.stuck, Nav.why = 0, nil
         return true
     end
     return false, "wesen"
 end
 
--- Faehrt zum Ziel. goal = { test = fn(x,y,z), x, y, z }.
+-- Passt Claude in dieses Feld (frei oder unbekannt, erlaubt)?
+function Nav.fits(x, y, z) return Map.state(x, y, z) <= 1 and Nav.ok(x, y, z, false) end
+
+-- Ziel liegt in einem Block oder Verbot: naechstes passendes Feld darueber
+-- (Wegpunkt im Huegel), sonst daneben. nil = in der Naehe nichts frei.
+function Nav.resolve(x, y, z)
+    if Nav.fits(x, y, z) then return x, y, z end
+    for dy = 1, 12 do if Nav.fits(x, y + dy, z) then return x, y + dy, z end end
+    for r = 1, 3 do
+        for dy = 0, 4 do for dx = -r, r do for dz = -r, r do
+            if max(abs(dx), abs(dz)) == r and Nav.fits(x + dx, y + dy, z + dz) then return x + dx, y + dy, z + dz end
+        end end end
+    end
+    return nil
+end
+
+-- Scannen lohnt sich? Scanner geht und Claude ist ein Stueck weiter als beim
+-- letzten Scan: vor Neuland ab 3 Feldern, sonst ab 5 (neue Maschinen auf
+-- bekannten Wegen sieht er so rechtzeitig, der Scan reicht 8 Bloecke weit).
+function Nav.scanDue(force, unknown)
+    if now() < (Sense.scanBroken or 0) then return false end
+    local ls = Map.lastScan
+    if not ls then return true end
+    local moved = mdist(ls.x, ls.y, ls.z, pos.x, pos.y, pos.z)
+    if force then return now() - ls.t > 2 or moved > 0 end
+    return moved >= (unknown and 3 or 5)
+end
+
+-- Umsehen ohne Scanner: oben, unten und rundherum ins Nachbarfeld schauen
+function Nav.probe()
+    local function look(dir, x, y, z)
+        local seen, info = T.inspect(dir)
+        Map.block(x, y, z, (seen and type(info) == "table" and type(info.name) == "string") and info.name or nil)
+    end
+    look("up", pos.x, pos.y + 1, pos.z)
+    look("down", pos.x, pos.y - 1, pos.z)
+    local f0 = pos.f
+    for i = 0, 3 do
+        local f = (f0 + i) % 4
+        T.face(f)
+        look("fwd", pos.x + DX[f], pos.y, pos.z + DZ[f])
+    end
+end
+
+-- Ist der Rest des Wegs noch frei (nach einem Scan)?
+function Nav.pathOk(path, i, escape)
+    for j = i, #path do
+        local c = path[j]
+        if not Nav.ok(c.x, c.y, c.z, false, nil, escape) then return false end
+    end
+    return true
+end
+
+-- Wirklich nicht weitergekommen: zaehlen und den Grund merken (Anzeige, Log)
+function Nav.fail(why)
+    local d = Nav.leashDist(pos.x, pos.z)
+    if d > cfg.leash then
+        why = "ausserhalb der Leine (" .. floor(d) .. " von " .. cfg.leash .. " Bl., Mitte in MODI > SICHERHEIT)"
+    end
+    Nav.stuck = Nav.stuck + 1
+    Nav.why = why
+end
+
+-- Faehrt zum Ziel. goal = { test = fn(x,y,z), x, y, z, cell = true (ein Feld) }.
 -- opts: tick() -> true bricht ab; maxSteps = nach so vielen Schritten zurueck
--- (z.B. beim Folgen neu planen); partial = so nah wie moeglich.
--- Rueckgabe: true (am Ziel) | "teil" (maxSteps erreicht) | false, Grund.
+-- (z.B. beim Folgen neu planen); exact = Feld nicht verschieben; limit, rounds.
+-- Rueckgabe: true (am Ziel) | "teil" (so nah wie es gerade geht / maxSteps) | false, Grund.
 function Nav.go(goal, opts)
     opts = opts or {}
-    local fails, scans, steps = 0, 0, 0
-    for _ = 1, opts.rounds or 60 do
+    local steps, still, bestH, noGain = 0, 0, nil, 0
+    for _ = 1, opts.rounds or 40 do
         if goal.test(pos.x, pos.y, pos.z) then Nav.stuck = 0 return true end
         if opts.tick and opts.tick() then return false, "abbruch" end
         T.check()
-        local path, full = Nav.plan(goal.test, goal.x, goal.y, goal.z,
-                                    { unknown = true, limit = opts.limit, partial = opts.partial, escape = Nav.here() >= 3 })
+        if goal.cell and not opts.exact then
+            local x, y, z = Nav.resolve(goal.x, goal.y, goal.z)
+            if not x then return false, "ziel" end
+            if x ~= goal.x or y ~= goal.y or z ~= goal.z then goal = Nav.cell(x, y, z) end
+            if goal.test(pos.x, pos.y, pos.z) then Nav.stuck = 0 return true end
+        end
+        local escape = Nav.here() >= 3
+        local path, full, room = Nav.plan(goal.test, goal.x, goal.y, goal.z, { limit = opts.limit, escape = escape })
+        local scanned = false
         if not path then
-            local ls = Map.lastScan
-            if scans < 2 and (not ls or mdist(ls.x, ls.y, ls.z, pos.x, pos.y, pos.z) > 1 or now() - ls.t > 20) and Sense.scan() then
-                scans = scans + 1
+            if room then return "teil" end               -- Platz ist da, naeher geht es nur gerade nicht
+            -- rundherum zu: einmal genau hinsehen (vielleicht wurde etwas weggenommen)
+            if not opts.probed then
+                opts.probed = true
+                Nav.probe()
+                if Nav.scanDue(true) then Sense.scan() end
+                scanned = true
             else
-                Nav.stuck = Nav.stuck + 1
+                Nav.fail("eingesperrt bei " .. pos.x .. " " .. pos.y .. " " .. pos.z)
                 return false, "kein weg"
             end
         else
-            local moved, completed = false, true
+            local moved = false
             for i = 2, #path do
-                local c = path[i]
                 if opts.tick and opts.tick() then return false, "abbruch" end
-                local st = Map.state(c.x, c.y, c.z)
-                if st == 0 then
-                    if not Sense.scan() then
-                        Nav.stuck = Nav.stuck + 1
-                        return false, "scan: " .. tostring(Sense.scanErr)
-                    end
-                    scans = scans + 1
-                    completed = false
-                    break
+                local c = path[i]
+                local unknown = Map.state(c.x, c.y, c.z) == 0
+                if Nav.scanDue(false, unknown) and Sense.scan() then
+                    scanned = true
+                    if not Nav.pathOk(path, i, escape) then break end   -- neue Lage: neu planen
                 end
-                if not Nav.ok(c.x, c.y, c.z, true, nil, Nav.here() >= 3) then completed = false break end
+                if not Nav.ok(c.x, c.y, c.z, false, nil, escape) then break end
                 local ok, why = Nav.stepTo(c.x, c.y, c.z)
                 if not ok then
-                    completed = false
                     if why == "tank" then return false, "tank" end
-                    if why == "wesen" then
-                        if not (Fight and Fight.clearWay(c)) then
-                            Nav.temp[K(c.x, c.y, c.z)] = now() + 4
-                            sleep(0.4)
-                        end
+                    if why == "wesen" and not (Fight and Fight.clearWay(c)) then
+                        Nav.temp[K(c.x, c.y, c.z)] = now() + 4
+                        sleep(0.4)
                     end
-                    fails = fails + 1
                     break
                 end
-                moved = true
-                steps = steps + 1
+                moved, steps = true, steps + 1
                 if opts.maxSteps and steps >= opts.maxSteps then return "teil" end
                 if i % 4 == 0 then T.check() end
             end
-            if not moved then fails = fails + 1 end
-            if fails > 10 then
-                Nav.stuck = Nav.stuck + 1
-                return false, "festgefahren"
-            end
-            -- Teilweg zu Ende gefahren: naeher geht es gerade nicht
-            if completed and not full and not goal.test(pos.x, pos.y, pos.z) then return "teil" end
+            if moved or scanned then still = 0 else still = still + 1 end
+            local hh = abs(pos.x - goal.x) + abs(pos.y - goal.y) + abs(pos.z - goal.z)
+            if not bestH or hh < bestH then bestH, noGain = hh, 0 elseif not scanned then noGain = noGain + 1 end
+            if not full and noGain >= 3 then return "teil" end
+        end
+        if still >= 6 then
+            Nav.fail("kommt nicht weiter bei " .. pos.x .. " " .. pos.y .. " " .. pos.z)
+            return false, "festgefahren"
         end
     end
-    return false, "zu weit"
+    return "teil"
 end
 
 -- Ziel: genau ein Feld
 function Nav.cell(x, y, z)
-    return { x = x, y = y, z = z, test = function(a, b, c) return a == x and b == y and c == z end }
+    return { x = x, y = y, z = z, cell = true, test = function(a, b, c) return a == x and b == y and c == z end }
 end
 -- Ziel: irgendwo in der Naehe eines Punkts (waagerecht r1..r2, Hoehe y0..y1)
 function Nav.near(x, y, z, r1, r2, y0, y1)
@@ -4473,16 +4683,53 @@ function Nav.near(x, y, z, r1, r2, y0, y1)
     end }
 end
 
+-- Zufaelliges, erreichbares Ziel in der Naehe (wie das Herumstreifen von Mobs):
+-- Breitensuche ueber passende Felder, eher die weiter entfernten.
+function Nav.wander(cx, cy, cz, R, y0, y1)
+    local start = K(pos.x, pos.y, pos.z)
+    local seen, queue, cand, known = { [start] = true }, { { pos.x, pos.y, pos.z } }, {}, {}
+    local qi = 1
+    while qi <= #queue and #queue < 2500 do
+        local c = queue[qi]
+        qi = qi + 1
+        for i = 1, 6 do
+            local nx, ny, nz = c[1] + NB[i][1], c[2] + NB[i][2], c[3] + NB[i][3]
+            local k = K(nx, ny, nz)
+            if not seen[k] then
+                seen[k] = true
+                if max(abs(nx - cx), abs(nz - cz)) <= R and ny >= cy + y0 and ny <= cy + y1 and Nav.fits(nx, ny, nz) then
+                    queue[#queue + 1] = { nx, ny, nz }
+                    if max(abs(nx - pos.x), abs(nz - pos.z)) >= 3 then
+                        cand[#cand + 1] = queue[#queue]
+                        if Map.state(nx, ny, nz) == 1 then known[#known + 1] = queue[#queue] end
+                    end
+                end
+            end
+        end
+        if qi % 300 == 0 then yieldNow() end
+    end
+    -- meist Bekanntes, ab und zu Neuland (so lernt Claude die Basis)
+    local list = (#known >= 8 and math.random(3) > 1) and known or cand
+    if #list == 0 then return nil end
+    local c = list[math.random(max(1, floor(#list / 2)), #list)]
+    return { x = c[1], y = c[2], z = c[3] }
+end
+
 -- Aus einer schlechten Lage befreien (Wasser, Gefahr, eingesperrt):
 -- naechstes sichere Feld suchen, ohne etwas abzubauen.
 function Nav.rescue()
-    local okGoal = { x = pos.x, y = pos.y, z = pos.z, test = function(a, b, c)
+    local okGoal = function(a, b, c)
         return not (a == pos.x and b == pos.y and c == pos.z) and Nav.ok(a, b, c, true) and Map.state(a, b, c) == 1
-    end }
-    local path = Nav.plan(okGoal.test, pos.x, pos.y, pos.z, { unknown = false, escape = true, limit = 3000 })
-    if not path then
+    end
+    local path = Nav.plan(okGoal, pos.x, pos.y, pos.z, { known = true, escape = true, limit = 3000 })
+    if not path and Nav.scanDue(true) then
         Sense.scan()
-        path = Nav.plan(okGoal.test, pos.x, pos.y, pos.z, { unknown = false, escape = true, limit = 3000 })
+        path = Nav.plan(okGoal, pos.x, pos.y, pos.z, { known = true, escape = true, limit = 3000 })
+    end
+    if not path then
+        -- nichts Bekanntes in Reichweite: nach oben (meist frei), sonst irgendwohin
+        path = Nav.plan(function(a, b, c) return Map.state(a, b, c) == 0 and Nav.ok(a, b, c) end,
+                        pos.x, pos.y + 3, pos.z, { escape = true, limit = 600 })
     end
     if not path then return false end
     for i = 2, #path do
@@ -4565,7 +4812,7 @@ local LINES = {
     mute = { "Ich bin still. '$claude sprich' und ich rede wieder." },
     unmute = { "Danke. Es war sehr ruhig." },
     visitor = { "Unbekannter Besuch: {name}. Ich habe es notiert." },
-    noSpy = { "Ich sehe keine Spieler-Positionen. Am Server muss 'playerSpy' an sein." },
+    noSpy = { "Ich finde dich gerade nicht. Komm in meine Naehe oder nimm die Fernbedienung." },
     noScan = { "Ohne Geo Scanner kenne ich die Gegend nicht. Ich bleibe, wo ich bin." },
     noWorld = { "Ich kenne meine Welt-Koordinaten nicht. Bitte Basis mit GPS setzen (Taste H an mir)." },
 }
@@ -4888,7 +5135,7 @@ end
 function Locker.atHome() return pos.x == 0 and pos.y == 0 and pos.z == 0 end
 function Locker.goHome(tick)
     if Locker.atHome() then return true end
-    return Nav.go(Nav.cell(0, 0, 0), { tick = tick, limit = 8000 }) == true
+    return Nav.go(Nav.cell(0, 0, 0), { tick = tick, limit = 8000, exact = true }) == true
 end
 -- Alles aus dem Spind holen (bis das Inventar voll ist). Rueckgabe: Spind leer?
 function Locker.takeAll()
@@ -5239,24 +5486,34 @@ function Modes.idle()
     if cfg.idle == "hover" and not night then
         B.sub = "schwebt"
         if now() >= (B.nextHover or 0) then
-            B.nextHover = now() + 15 + math.random(25)
-            for _ = 1, 16 do
-                local a, r = math.random() * 2 * math.pi, math.random(2, cfg.hoverR)
-                local tx = park.x + floor(math.cos(a) * r + 0.5)
-                local tz = park.z + floor(math.sin(a) * r + 0.5)
-                local ty = park.y + math.random(0, 3)
-                if Map.state(tx, ty, tz) <= 1 and Nav.ok(tx, ty, tz, false) then
-                    goCell({ x = tx, y = ty, z = tz }, { limit = 3000, rounds = 8 })
-                    break
+            B.nextHover = now() + 10 + math.random(20)
+            if hdist(pos.x, pos.z, park.x, park.z) > cfg.hoverR then
+                goCell(park, { limit = 6000 })                 -- erst zurueck in die Naehe
+            else
+                local t = Nav.wander(park.x, park.y, park.z, cfg.hoverR, -2, 5)
+                if not t then
+                    Nav.probe()
+                    if Nav.scanDue(true) then Sense.scan() end
+                    t = Nav.wander(park.x, park.y, park.z, cfg.hoverR, -2, 5)
+                    if not t then
+                        local free = false
+                        for i = 1, 6 do if Nav.fits(pos.x + NB[i][1], pos.y + NB[i][2], pos.z + NB[i][3]) then free = true end end
+                        if not free then Nav.fail("eingesperrt bei " .. pos.x .. " " .. pos.y .. " " .. pos.z) end
+                    end
                 end
+                if t then goCell(t, { limit = 3000, rounds = 12 }) end
             end
         end
         return Sense.listen(2)
     end
-    if not at(park) then
+    if not at(park) and not (B.parkAt and at(B.parkAt)) then
         B.sub = "fliegt zum Parkplatz"
         local r, why = goCell(park)
-        if r == false and why ~= "abbruch" then B.sub = "Parkplatz nicht erreichbar" Sense.listen(3) end
+        if r == true and not at(park) then B.parkAt = here() return end        -- Parkplatz belegt: daneben
+        if r ~= true and why ~= "abbruch" and not at(park) then
+            B.sub = "Parkplatz nicht erreichbar" .. (why and why ~= "teil" and (": " .. why) or "")
+            Sense.listen(3)
+        end
         return
     end
     B.sub = night and "parkt (Nacht)" or "parkt"
@@ -5294,9 +5551,15 @@ function Modes.stay()
     if not at(st.hold) then
         B.sub = "fliegt zur Position"
         local r, why = goCell(st.hold)
-        if r == false and why ~= "abbruch" then
-            Voice.say("Da komme ich nicht hin.", nil, "answer")
-            st.hold = here()
+        if r == true and not at(st.hold) then st.hold = here() return end   -- Feld war belegt: daneben
+        if r ~= true and why ~= "abbruch" and not at(st.hold) then
+            B.holdFails = (B.holdFails or 0) + 1
+            if r == false or B.holdFails >= 3 then
+                Voice.say("Naeher komme ich nicht ran.", nil, "answer")
+                st.hold, B.holdFails = here(), 0
+            end
+        else
+            B.holdFails = 0
         end
         return
     end
@@ -5310,7 +5573,8 @@ function Modes.home()
     local park = cfg.park or { x = 0, y = 0, z = 0 }
     B.sub = "fliegt heim"
     local r, why = goCell(park)
-    if r == true then setMode("idle") elseif r == false and why ~= "abbruch" then B.sub = "Parkplatz nicht erreichbar" Sense.listen(2) end
+    if r == true or at(park) then setMode("idle")
+    elseif why ~= "abbruch" then B.sub = "Parkplatz nicht erreichbar" Sense.listen(2) end
 end
 
 -- Folgen (once = "komm": ankommen und dort bleiben)
@@ -5337,7 +5601,9 @@ function Modes.follow(once)
     B.lost = nil
     local d = hdist(e.x, e.z, pos.x, pos.z)
     local dy = pos.y - e.y
-    if d <= cfg.followDist + 0.5 and dy >= 0 and dy <= 3 then
+    -- gleiche Regel wie das Wegziel unten (waagerecht hoechstens followDist, 1-2 hoeher)
+    local headHigh = (dy >= 1 and dy <= 2) or (dy == 0 and Map.state(pos.x, pos.y + 1, pos.z) == 2)   -- niedrige Decke
+    if max(abs(e.x - pos.x), abs(e.z - pos.z)) <= cfg.followDist and headHigh then
         if once then
             Voice.say("arrived", nil, "answer")
             st.hold = here()
@@ -5366,11 +5632,15 @@ function Modes.follow(once)
             Voice.say("outrun", nil, "chatter")
         end
     end
+    local ox, oy, oz = pos.x, pos.y, pos.z
     local r, why = Nav.go(Nav.near(e.x, e.y, e.z, 1, cfg.followDist, 1, 2),
                           { tick = Brain.tick, maxSteps = 5, partial = true, limit = 3000 })
     if r == false and why ~= "abbruch" then
         explainBlocked(e)
         Sense.listen(1)
+    elseif r == "teil" and pos.x == ox and pos.y == oy and pos.z == oz then
+        explainBlocked(e)                                -- naeher geht es gerade nicht: kurz warten
+        Sense.listen(1.5)
     end
 end
 function Modes.come() return Modes.follow(true) end
@@ -5380,24 +5650,36 @@ function Modes.patrol()
     if #wps == 0 then Voice.say("noPoints", nil, "info") return setMode("idle") end
     st.pi = ((st.pi or 1) - 1) % #wps + 1
     local wp = wps[st.pi]
-    if at(wp) then
+    if st.wpAt == st.pi then
         B.sub = "Punkt " .. st.pi .. "/" .. #wps
         local t0 = now()
         while now() - t0 < cfg.patrolWait do
             Sense.listen(min(2, cfg.patrolWait))
             if Brain.tick() then return end
         end
-        st.pi = st.pi % #wps + 1
-        B.wpFails = 0
+        st.pi, st.wpAt, B.wpFails = st.pi % #wps + 1, nil, 0
         return
     end
     B.sub = "unterwegs zu " .. st.pi .. "/" .. #wps
     local r, why = goCell(wp)
-    if r == false and why ~= "abbruch" then
-        B.wpFails = (B.wpFails or 0) + 1
-        if B.wpFails >= 2 then st.pi, B.wpFails = st.pi % #wps + 1, 0 end
-        Sense.listen(1)
+    if why == "abbruch" then return end
+    -- angekommen (Punkt im Block: das freie Feld darueber/daneben zaehlt)
+    if r == true or max(abs(pos.x - wp.x), abs(pos.z - wp.z)) <= 2 then
+        st.wpAt, B.wpFails = st.pi, 0
+        return
     end
+    B.wpFails = (B.wpFails or 0) + 1
+    if B.wpFails >= 2 then
+        -- nur einmal je Punkt und 10 Minuten melden
+        B.wpSaid = B.wpSaid or {}
+        if now() - (B.wpSaid[st.pi] or -999) > 600 then
+            B.wpSaid[st.pi] = now()
+            Voice.say("Punkt " .. st.pi .. " erreiche ich nicht. Ich nehme den naechsten.", nil, "info")
+            logEv("weg", "Punkt " .. st.pi .. " nicht erreichbar" .. ((why and why ~= "teil") and (" (" .. why .. ")") or ""))
+        end
+        st.pi, B.wpFails = st.pi % #wps + 1, 0
+    end
+    Sense.listen(1)
 end
 
 function Modes.build()
@@ -5450,9 +5732,9 @@ function Modes.build()
             job.skipped, job.i = job.skipped + 1, job.i + 1
             return
         end
-        local r, why = goCell({ x = x, y = y + 1, z = z }, { limit = 4000, rounds = 10 })
+        local r, why = goCell({ x = x, y = y + 1, z = z }, { limit = 4000, rounds = 10, exact = true })
         if r ~= true then
-            if r == false and why ~= "abbruch" then
+            if why ~= "abbruch" then
                 job.fails = (job.fails or 0) + 1
                 if job.fails >= 2 then job.skipped, job.i, job.fails = job.skipped + 1, job.i + 1, 0 end
             end
@@ -5509,7 +5791,7 @@ function Modes.torch()
         Sense.scan()
     end
     if not spot then Voice.say("Hier finde ich keinen Platz fuer eine Fackel.", nil, "answer") return setMode("stay") end
-    if goCell({ x = spot.x, y = spot.y + 1, z = spot.z }, { limit = 3000 }) == true then
+    if goCell({ x = spot.x, y = spot.y + 1, z = spot.z }, { limit = 3000, exact = true }) == true then
         slot = Inv.find(isTorch)
         if slot then
             turtle.select(slot)
@@ -5545,7 +5827,9 @@ function Modes.hide()
     local h = st.hide
     if not at(h) then
         B.sub = "versteckt sich"
-        if goCell(h, { limit = 6000 }) == false then st.hide = nil end
+        local r, why = goCell(h, { limit = 6000 })
+        if r == false and why ~= "abbruch" then st.hide = nil
+        elseif r == true or (r == "teil" and why == nil) then st.hide.x, st.hide.y, st.hide.z = pos.x, pos.y, pos.z end
         return
     end
     B.sub = "versteckt"
@@ -5593,7 +5877,9 @@ function Modes.seek()
         return setMode("stay")
     end
     B.sub = "sucht " .. name
-    Nav.go(Nav.near(e.x, e.y, e.z, 1, 2, 0, 2), { tick = Brain.tick, maxSteps = 5, partial = true, limit = 3000 })
+    local ox, oz = pos.x, pos.z
+    local r = Nav.go(Nav.near(e.x, e.y, e.z, 1, 2, 0, 2), { tick = Brain.tick, maxSteps = 5, partial = true, limit = 3000 })
+    if r ~= true and pos.x == ox and pos.z == oz then Sense.listen(1.5) end
 end
 
 -- Tank leer: zur Basis (wenn es reicht), dort aus Inventar/Spind tanken.
@@ -5784,8 +6070,11 @@ function Brain.observe()
     end
     if Nav.stuck >= 3 then
         Voice.say("stuck", nil, "info")
-        B.alarm = "festgefahren"
+        B.alarm = "festgefahren: " .. tostring(Nav.why or "?")
+        logEv("weg", "festgefahren: " .. tostring(Nav.why or "?"))
         Nav.stuck = 0
+    elseif B.alarm and B.alarm:find("^festgefahren") and Nav.why == nil then
+        B.alarm = nil
     end
 end
 
@@ -5809,7 +6098,8 @@ function Brain.publish(force)
                 mute = Voice.muted() and Voice.muteUntil or nil, kn = Map.known, kills = mem.kills or 0,
                 cv = cfgV, lv = Log.v, wp = #mem.wps, zn = #mem.zones, al = B.alarm,
                 b = job and { d = (job.i or 1) - 1, n = job.n or 0, k = job.kind, p = job.placed } or nil,
-                torches = Inv.count(isTorch), spy = not Sense.noSpy, scan = Sense.scanErr })
+                torches = Inv.count(isTorch), spy = not Sense.noSpy, scan = Sense.scanErr,
+                sm = Sense.noSpy and ((T.relToWorld(0, 0, 0) and "box") or "nah") or nil, why = Nav.why })
     local short = SHORT[B.mode] or B.mode:upper()
     if short ~= B.shortSent then B.shortSent = short T.status(short) end
 end
@@ -10021,8 +10311,9 @@ function Claude:receive(id, msg)
     if x then
         local e = { m = clText(x.m, 10), s = clText(x.s, 40), tg = clText(x.tg, 16), said = clText(x.said, 120),
                     saidT = clNum(x.saidT), mute = clNum(x.mute), kn = clNum(x.kn), kills = clNum(x.kills),
-                    cv = clNum(x.cv), lv = clNum(x.lv), wp = clNum(x.wp), zn = clNum(x.zn), al = clText(x.al, 30),
-                    torches = clNum(x.torches), spy = x.spy ~= false, scan = clText(x.scan, 40), near = {}, mobs = {} }
+                    cv = clNum(x.cv), lv = clNum(x.lv), wp = clNum(x.wp), zn = clNum(x.zn), al = clText(x.al, 60),
+                    torches = clNum(x.torches), spy = x.spy ~= false, scan = clText(x.scan, 40), near = {}, mobs = {},
+                    sm = clText(x.sm, 4) }
         if type(x.b) == "table" then e.b = { d = clNum(x.b.d) or 0, n = clNum(x.b.n) or 0, k = clText(x.b.k, 8) } end
         for _, list in ipairs({ { "near", 6 }, { "mobs", 6 } }) do
             local src = x[list[1]]
@@ -10323,7 +10614,15 @@ function Claude:drawStatus(u)
         UI.text(x0, y, ("BAU " .. (e.b.k or "") .. " " .. e.b.d .. "/" .. e.b.n):sub(1, w - x0), colors.yellow)
         y = y + 1
     end
-    if e.spy == false then UI.text(x0, y, ("Spieler-Positionen aus (Server-Config playerSpy)"):sub(1, w - x0), colors.orange) y = y + 1 end
+    if run and e.al and e.al:find("^festgefahren") then
+        UI.text(x0, y, ("! " .. e.al):sub(1, w - x0), colors.orange)
+        y = y + 1
+    end
+    if e.spy == false then
+        local t = (e.sm == "box") and "playerSpy aus: Claude ortet langsamer" or "playerSpy aus: Spieler nur in der Naehe"
+        UI.text(x0, y, t:sub(1, w - x0), (e.sm == "box") and colors.lightGray or colors.orange)
+        y = y + 1
+    end
     if e.scan and e.scan ~= "" then UI.text(x0, y, ("Scanner: " .. e.scan):sub(1, w - x0), colors.orange) y = y + 1 end
     -- fehlende Ausruestung (Claude laeuft trotzdem, nur ohne das)
     if u.tools and run then
@@ -15324,7 +15623,7 @@ Sys.HELP = {
                "Er baut nie etwas ab, bleibt ueber Wasser, 100 Bloecke beim PC und weg von Create-Maschinen." },
     info  = { "Geraet, Funk, Speicher und Erweiterungen auf einen Blick.",
               "EINSTELLUNGEN: Passwoerter, Design, Lager, Schwarm.",
-              "SYSTEM: Check, Update, Backup, Papierkorb, Einrichtung und sicherer Modus.",
+              "SYSTEM: Check, Update, Backup, Papierkorb, Aufraeumen, Einrichtung und sicherer Modus.",
               "Die Uhr unten rechts antippen: alle Mitteilungen." },
 }
 
@@ -15536,6 +15835,7 @@ function Sys.diskCheck()
     if free < 60000 then
         -- erst selbst Platz schaffen: alter Papierkorb, altes Log, alte Backups
         Sys.trashDrop(nil, 86400)
+        pcall(Sys.clean, Sys.cleanScan())
         pcall(fs.delete, CONFIG.logFile .. ".alt")
         local list = Sys.backupList(true)
         for i = 2, #list do pcall(fs.delete, list[i].path) end
@@ -15549,6 +15849,131 @@ function Sys.diskCheck()
     elseif free > 60000 then
         Sys.lowDisk = false
     end
+end
+
+-- ---------- Aufraeumen (1.2.1) ----------
+-- Positivliste: nur Dateien, die das OS selbst anlegt und die nachweislich
+-- ueberfluessig sind. Unbekanntes wird nie angefasst, Daten des Nutzers
+-- (Notizen, Scripts, Disketten-Kopien) werden nur angezeigt.
+--   muell = weg damit (auch automatisch), frage = nur wenn man es auswaehlt.
+local function onHdd(p)
+    local ok, d = pcall(fs.getDrive, p)
+    if ok and d then return d == "hdd" end
+    return not (p:find("^rom") or p:find("^disk"))
+end
+local function cleanWalk(dir, depth, fn)
+    local ok, list = pcall(fs.list, dir)
+    if not ok then return end
+    for _, name in ipairs(list) do
+        local p = fs.combine(dir, name)
+        if onHdd(p) then
+            if fs.isDir(p) then
+                if depth > 0 then cleanWalk(p, depth - 1, fn) end
+            else
+                fn(p, name)
+            end
+        end
+    end
+end
+local function cleanSize(path)
+    if fs.isDir(path) then
+        local n = 0
+        cleanWalk(path, 4, function(p) local ok, k = pcall(fs.getSize, p) n = n + (ok and tonumber(k) or 0) end)
+        return n
+    end
+    local ok, n = pcall(fs.getSize, path)
+    return ok and n or 0
+end
+
+function Sys.cleanScan()
+    local items, seen = {}, {}
+    local function add(path, why, kind, act)
+        path = fs.combine(path, "")
+        if seen[path] or not fs.exists(path) then return end
+        seen[path] = true
+        items[#items + 1] = { path = path, why = why, kind = kind, act = act, size = cleanSize(path) }
+    end
+    local self = fs.combine(Sys.SELF or "startup.lua", "")
+    cleanWalk("", 5, function(p, name)
+        if name:sub(-4) == ".neu" then
+            -- halb geschrieben: nur wenn die Datei selbst heil daneben liegt
+            if fs.exists(p:sub(1, -5)) then add(p, "halb geschrieben (Absturz)", "muell") end
+        elseif name:sub(-4) == ".bak" and fs.exists(p:sub(1, -5)) and not p:find("^disk") then
+            local base = p:sub(1, -5)
+            local text = Store.read(base)
+            if text and type(textutils.unserialize(text)) == "table" then
+                add(p, "Sicherungskopie (kommt beim Speichern wieder)", "frage")
+            end
+        end
+    end)
+    add(CONFIG.logFile .. ".alt", "altes Log", "muell")
+    if not Sys.upd.pending and not fs.exists(Sys.UPD_DB) then
+        add(Sys.UPD_OLD, "alte OS-Fassung vom letzten Update", "muell")
+    end
+    -- alte OS-Kopien im Hauptordner (gross, GTS-Kopf, nicht die laufende Datei)
+    for _, name in ipairs(fs.list("")) do
+        local p = fs.combine(name, "")
+        if p ~= self and not fs.isDir(p) and onHdd(p) and (fs.getSize(p) or 0) > 100000 then
+            local h = fs.open(p, "r")
+            local head = h and ((h.readLine() or "") .. "\n" .. (h.readLine() or "")) or ""
+            if h then h.close() end
+            if type(head) == "string" and head:find("GTS OS", 1, true) and head:find("^%-%-") then
+                add(p, "alte Kopie von GTS OS", "frage")
+            end
+        end
+    end
+    local list = Sys.backupList(true)
+    for i = 2, #list do add(list[i].path, "aelteres Backup (" .. list[i].label .. ")", "frage") end
+    if #Sys.trashList() > 0 then add(Sys.TRASH_DIR, "Papierkorb leeren", "frage", "trash") end
+    table.sort(items, function(a, b)
+        if a.kind ~= b.kind then return a.kind == "muell" end
+        return a.size > b.size
+    end)
+    return items
+end
+
+-- Loescht die ausgewaehlten Eintraege. Rueckgabe: frei gewordene Bytes, Anzahl.
+function Sys.clean(items, pick)
+    local freed, n = 0, 0
+    for _, it in ipairs(items) do
+        local on
+        if pick then on = pick(it) else on = it.kind == "muell" end
+        if on then
+            if it.act == "trash" then
+                local k = Sys.trashDrop()
+                if k > 0 then n, freed = n + k, freed + it.size end
+            elseif fs.exists(it.path) and pcall(fs.delete, it.path) and not fs.exists(it.path) then
+                n, freed = n + 1, freed + it.size
+            end
+        end
+    end
+    if n > 0 then Kernel.log("INFO", "Aufgeraeumt: " .. n .. " Dateien, " .. fmtSize(freed) .. " frei") end
+    return freed, n
+end
+
+-- Wer belegt wie viel? (fuer AUFRAEUMEN)
+function Sys.usage()
+    local self = fs.combine(Sys.SELF or "startup.lua", "")
+    local groups = {
+        { "GTS OS", 0 }, { "Daten (Einstellungen, Lager ...)", 0 }, { "Backups", 0 }, { "Papierkorb", 0 },
+        { "Notizen", 0 }, { "Scripts / LUA APPS", 0 }, { "Logs", 0 }, { "Sonstiges", 0 },
+    }
+    local function grp(p)
+        if p == self then return 1 end
+        if p:find("^gts/backup/") or p:find("^backups/") then return 3 end
+        if p:find("^gts/papierkorb/") then return 4 end
+        if p:find("^gts/") then return 2 end
+        if p:find("^notes/") then return 5 end
+        if p:find("^scripts/") then return 6 end
+        if p:find("^sys/") then return 7 end
+        return 8
+    end
+    cleanWalk("", 6, function(p)
+        local g = groups[grp(p)]
+        local ok, n = pcall(fs.getSize, p)
+        g[2] = g[2] + (ok and tonumber(n) or 0)
+    end)
+    return groups
 end
 
 -- ---------- Ein-Knopf-Update (GitHub, Gist als Alternative) ----------
@@ -15863,6 +16288,13 @@ function Sys.service()
         if now >= nextDaily then
             nextDaily = now + 900
             Sys.trashDrop(nil, Sys.TRASH_DAYS * 86400)
+            if Settings.get("cleanAuto") ~= false and Settings.get("cleanDay") ~= os.date("%Y-%m-%d") then
+                Settings.set("cleanDay", os.date("%Y-%m-%d"))
+                local ok, freed, n = pcall(function() return Sys.clean(Sys.cleanScan()) end)
+                if ok and n and n > 0 and freed > 8000 then
+                    Kernel.notify("Aufgeraeumt: " .. fmtSize(freed) .. " frei", colors.lime, "info", "clean")
+                end
+            end
             if not READONLY and Settings.get("autoBackup") ~= false and Settings.get("backupDay") ~= os.date("%Y-%m-%d") then
                 local ok, msg = Sys.backupMake()
                 if not ok then Kernel.notify("Backup: " .. msg, colors.orange, "info", "backup") end
@@ -16014,7 +16446,7 @@ function Sys.crashScreen(err, mon)
 end
 
 local Info = { id = "info", title = "INFO", order = 11, page = 1, gps = nil, gpsBusy = false,
-               view = "info", setPage = { page = 1 }, input = nil, shift = false }
+               view = "info", setPage = { page = 1 }, sysPage = { page = 1 }, input = nil, shift = false }
 
 function Info:insert(text) Input.insert(self, text) end
 function Info:key(action) Input.key(self, action) end
@@ -16338,15 +16770,23 @@ function Info:drawSystem()
         tiles[#tiles + 1] = { id = "setup", title = "EINRICHTUNG", value = Settings.get("setupDone") and "erledigt" or "jetzt starten",
                               dot = Settings.get("setupDone") and colors.lime or colors.yellow }
     end
+    local free = fs.getFreeSpace("/")
+    tiles[#tiles + 1] = { id = "clean", title = "AUFRAEUMEN", value = (type(free) == "number") and (fmtSize(free) .. " frei") or "Speicher",
+                          dot = (type(free) == "number" and free < 60000) and colors.yellow or colors.lime }
     tiles[#tiles + 1] = { id = "safe", title = "SICHERER MODUS", value = Sys.safe and "an" or "aus", dot = Sys.safe and colors.orange or colors.lightGray }
     local cols = narrow and 1 or ((w >= 70) and 3 or 2)
-    local tw = math.floor((w - 2 - (cols - 1) * 2) / cols)
+    local tw = narrow and w or math.floor((w - 2 - (cols - 1) * 2) / cols)
     local th = narrow and 2 or 3
+    -- Kacheln reihenweise; passen nicht alle, wird geblaettert
+    local rowsList = {}
     for i, t in ipairs(tiles) do
-        local c, r = (i - 1) % cols, math.floor((i - 1) / cols)
-        local x, y = (narrow and 1 or 2) + c * (tw + 2), top + r * (th + 1)
-        if narrow then tw = w end
-        if y + th - 1 <= h - bh - 1 then
+        local r = math.floor((i - 1) / cols) + 1
+        rowsList[r] = rowsList[r] or {}
+        rowsList[r][#rowsList[r] + 1] = t
+    end
+    UI.list(self.sysPage, rowsList, top, th + 1, function(row, y)
+        for c, t in ipairs(row) do
+            local x = (narrow and 1 or 2) + (c - 1) * (tw + 2)
             UI.card(x, y, tw, th)
             UI.text(x + 1, y, "\7", t.dot)
             UI.text(x + 3, y, t.title:sub(1, tw - 5), colors.white)
@@ -16355,7 +16795,7 @@ function Info:drawSystem()
             UI.hit(x, y, tw, th, function() self.view = t.id self.setPage.page = 1 end)
             UI.surface = colors.black
         end
-    end
+    end)
 end
 
 function Info:drawCheck()
@@ -16538,6 +16978,72 @@ function Info:drawTrash()
         UI.text(tx, y, e.name:sub(1, room), colors.white)
         local info = fs.getDir(e.from) .. "  " .. Info.ago(e.t) .. "  " .. fmtSize(e.size)
         if #e.name + 2 + #info <= room then UI.text(tx + #e.name + 2, y, info, colors.lightGray) end
+    end)
+end
+
+-- AUFRAEUMEN: Muell (immer an), Rest nur auf Wunsch, darunter wer wie viel belegt
+function Info:drawClean()
+    local w, bh, narrow = Kernel.w, UI.bh(), UI.narrow()
+    if not self.cleanItems or os.clock() - (self.cleanT or -99) > 15 then
+        self.cleanItems, self.cleanUse, self.cleanT = Sys.cleanScan(), Sys.usage(), os.clock()
+        self.cleanSel = self.cleanSel or {}
+    end
+    local items, sel = self.cleanItems, self.cleanSel
+    local function on(it) if sel[it.path] ~= nil then return sel[it.path] end return it.kind == "muell" end
+    local total, count = 0, 0
+    for _, it in ipairs(items) do if on(it) then total, count = total + it.size, count + 1 end end
+    local top = UI.header("AUFRAEUMEN", not narrow and "Nur echter Muell - deine Dateien bleiben" or nil, {
+        { text = narrow and "LOS" or ("AUFRAEUMEN " .. fmtSize(total)), style = "primary", confirm = "clean", disabled = count == 0,
+          onClick = function()
+              local freed, n = Sys.clean(items, on)
+              self.cleanT, self.cleanSel = -99, {}
+              Kernel.notify(n .. " entfernt, " .. fmtSize(freed) .. " frei geworden", colors.lime)
+          end },
+        self:back(true),
+    })
+    local free, cap = fs.getFreeSpace("/"), nil
+    pcall(function() cap = fs.getCapacity("/") end)
+    local x0 = narrow and 1 or 2
+    if type(free) == "number" and type(cap) == "number" and cap > 0 then
+        UI.text(x0, top, ("Frei " .. fmtSize(free) .. " von " .. fmtSize(cap)):sub(1, w - x0), colors.white)
+        local bx = narrow and x0 or (x0 + 24)
+        local by = narrow and (top + 1) or top
+        UI.bar(bx, by, math.max(4, w - bx - 1), 1 - free / cap, (free < 60000) and colors.orange or colors.lime)
+        top = by + 2
+    end
+    -- Zeilen: Eintraege (Grund, Groesse, Pfad, Knopf), Automatik, Belegung
+    local rows = {}
+    for _, it in ipairs(items) do rows[#rows + 1] = { item = it } end
+    if #items == 0 then rows[1] = { text = "Kein Muell gefunden - alles sauber.", color = colors.lime } end
+    rows[#rows + 1] = { auto = true }
+    local used = {}
+    for _, g in ipairs(self.cleanUse or {}) do if g[2] > 0 then used[#used + 1] = g end end
+    for i = 1, #used, 2 do rows[#rows + 1] = { use = { used[i], used[i + 1] } } end
+    UI.list(self.setPage, rows, top, 3, function(r, y)
+        local tx, xr = UI.rowCard(y, 2)
+        if r.item then
+            local it, isOn = r.item, on(r.item)
+            local bx = UI.buttonsRight({ { text = isOn and "WEG" or "BLEIBT", style = isOn and "danger" or nil, h = 1,
+                                           onClick = function() sel[it.path] = not isOn end } }, y, xr)
+            local size = fmtSize(it.size)
+            UI.text(tx, y, it.why:sub(1, math.max(1, bx - tx - #size - 3)), it.kind == "muell" and colors.white or colors.lightGray)
+            UI.text(bx - #size - 1, y, size, colors.lightGray)
+            UI.text(tx, y + 1, it.path:sub(1, xr - tx + 1), colors.lightGray)
+        elseif r.auto then
+            local auto = Settings.get("cleanAuto") ~= false
+            local bx = UI.buttonsRight({
+                { text = "AN", h = 1, style = auto and "primary" or nil, onClick = function() Settings.set("cleanAuto", true) end },
+                { text = "AUS", h = 1, style = (not auto) and "primary" or nil, onClick = function() Settings.set("cleanAuto", false) end } }, y, xr)
+            UI.text(tx, y, ("Automatisch"):sub(1, bx - tx - 1), colors.white)
+            UI.text(tx, y + 1, (auto and "einmal am Tag, nur Muell" or "aus"):sub(1, xr - tx + 1), colors.lightGray)
+        elseif r.use then
+            for i, g in ipairs(r.use) do
+                local t = (g[1] .. ": " .. fmtSize(g[2]))
+                UI.text(tx, y + i - 1, t:sub(1, xr - tx + 1), colors.lightGray)
+            end
+        else
+            UI.text(tx, y, r.text:sub(1, xr - tx + 1), r.color or colors.white)
+        end
     end)
 end
 
@@ -16799,7 +17305,7 @@ end
 function Info:tick() return Kernel.app == self end   -- Laufzeit und Uhr laufen mit
 
 Info.VIEWS = { settings = "drawSettings", system = "drawSystem", check = "drawCheck", update = "drawUpdate",
-               backup = "drawBackup", trash = "drawTrash", setup = "drawSetup", safe = "drawSafe" }
+               backup = "drawBackup", trash = "drawTrash", setup = "drawSetup", safe = "drawSafe", clean = "drawClean" }
 
 function Info:draw()
     if self.input then return Input.draw(self) end
