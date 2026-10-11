@@ -1,5 +1,5 @@
 -- ======================================================================
--- GTS SCHWARM-AGENT v5.4 - Turtle-Client       (CC: Tweaked, MC 1.21.1)
+-- GTS SCHWARM-AGENT v5.5 - Turtle-Client       (CC: Tweaked, MC 1.21.1)
 -- Gegenstueck zu GTS OS 1.2 - als startup.lua auf jede Turtle (auch Claude).
 -- ======================================================================
 -- Der Agent bleibt dauerhaft auf der Turtle. Er
@@ -25,7 +25,7 @@
 --   [6] Welt und Funde     [12] Bildschirm und Start
 -- ======================================================================
 
-local VERSION = "5.4"
+local VERSION = "5.5"
 
 -- ======================================================================
 -- [1] KONFIGURATION
@@ -2010,7 +2010,36 @@ onCheck = function()
 end
 
 -- ---------- Geo Scanner ----------
-local function scan(radius) return withTool("scanner", function(p) return p.scan(radius) end) end
+-- Advanced Peripherals 0.8 heisst der Befehl scanBlocks (0.7: scan) und liefert
+-- Kommazahlen von der Blockmitte aus - hier auf ganze Bloecke gerundet.
+-- 0.8 hat ausserdem eine echte Abklingzeit von 2 s: dann kurz warten.
+local scanT = -99
+local function scan(radius)
+    local list, err = withTool("scanner", function(p)
+        local f = p.scanBlocks or p.scan
+        if type(f) ~= "function" then return nil, "Geo Scanner ohne Scan-Befehl" end
+        if p.scanBlocks then
+            local w = 2.05 - (os.clock() - scanT)
+            if w > 0 then os.sleep(w) end
+        end
+        local l, e = f(radius)
+        scanT = os.clock()
+        if type(l) ~= "table" and tostring(e):lower():find("cooldown") then
+            os.sleep(2.05)
+            l, e = f(radius)
+            scanT = os.clock()
+        end
+        return l, e
+    end)
+    if type(list) == "table" then
+        for _, b in ipairs(list) do
+            if type(b) == "table" and tonumber(b.x) and tonumber(b.y) and tonumber(b.z) then
+                b.x, b.y, b.z = math.floor(b.x + 0.5), math.floor(b.y + 0.5), math.floor(b.z + 0.5)
+            end
+        end
+    end
+    return list, err
+end
 -- Erz-Zaehlung des ganzen Chunks, in dem die Turtle steht.
 local function chunkAnalyze() return withTool("scanner", function(p) return p.chunkAnalyze() end) end
 
@@ -2061,7 +2090,15 @@ end
 local function tell(text)
     if not (tool.have.chat and data.owner) then return false end
     local ok = withTool("chat", function(p)
-        return p.sendMessageToPlayer(tostring(text):sub(1, 200), data.owner, "GTS")
+        text = tostring(text):sub(1, 200)
+        if type(p.sendMessageToPlayer) == "function" then return p.sendMessageToPlayer(text, data.owner, "GTS") end
+        -- AP 0.8: Optionen-Tabelle, hoechstens eine Nachricht je Sekunde
+        local r, e = p.sendMessage(text, { player = data.owner, prefix = "GTS" })
+        if not r and tostring(e):lower():find("cooldown") then
+            os.sleep(1.05)
+            r, e = p.sendMessage(text, { player = data.owner, prefix = "GTS" })
+        end
+        return r, e
     end)
     return ok and true or false
 end

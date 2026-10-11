@@ -34,8 +34,8 @@
 -- VERSION ist die interne Update-Nummer: steigt mit jeder Fassung und muss
 -- groesser als "8.0" sein (so hiess die erste Vollversion), sonst findet ein
 -- dort installiertes OS das Update nicht. Nirgends angezeigt.
-local VERSION = "8.3"
-local RELEASE = "1.2.1"
+local VERSION = "8.4"
+local RELEASE = "1.2.2"
 local EDITION = "claude" -- "pc" in gts_os.lua
 local READONLY = (EDITION ~= "pc")      -- Pocket/Handy: nur anzeigen, keine Befehle
 local PHONE = (EDITION == "phone")      -- GTS Phone: Handy fuer Freunde (Lager, Notizen, Rechner ...)
@@ -4709,7 +4709,12 @@ function Claude:service()
     if REMOTE or READONLY then return end
     local start = os.clock()
     while true do
-        local _, user, msg = os.pullEvent("chat")
+        local _, a, b, c = os.pullEvent("chat")
+        -- Advanced Peripherals 0.7: (name, text, uuid) - 0.8: (uuid, name, text)
+        local user, msg = a, b
+        if type(c) == "string" and type(b) == "string" and (a == nil or tostring(a):find("^%x+%-%x+%-%x+%-%x+%-%x+$")) then
+            user, msg = b, c
+        end
         -- (die Chat Box liefert beim Start die letzte Nachricht noch einmal)
         if os.clock() - start > 3 and type(user) == "string" and type(msg) == "string" and msg:lower():find("^%s*@?claude") then
             for id, u in pairs(self.units) do
@@ -5259,15 +5264,50 @@ function Claude:drawLog(u)
     end)
 end
 
+-- ---------- Fernbedienung: Claude meldet sich nicht ----------
+-- Haeufigste Gruende: anderes Schwarm-Passwort (dann hoert man GTS-Funk, kann
+-- ihn aber nicht lesen), kein Modem im Pocket Computer, zu weit weg.
+function Claude:drawSearch(top)
+    local w, h, bh = Kernel.w, Kernel.h, UI.bh()
+    local y = top + 1
+    UI.center(y, "Suche Claude ...", colors.white)
+    y = y + 2
+    local function say(text, color)
+        for _, l in ipairs(UI.wrap(text, w - 2)) do
+            if y < h - bh - 1 then UI.text(2, y, l, color or colors.lightGray) y = y + 1 end
+        end
+    end
+    local f = Kernel.foreign
+    local wrongKey = f and os.clock() - f.t < 90
+    if not Kernel.hw.modem then
+        say("Kein Funk-Modem! Die Fernbedienung braucht einen Pocket Computer mit Wireless oder Ender Modem.", colors.red)
+    elseif wrongKey then
+        say("Ich hoere GTS-Funk (#" .. tostring(f.id) .. "), aber mit einem anderen Passwort. Gib hier das Schwarm-Passwort vom PC ein.", colors.orange)
+    elseif Net.isDefault then
+        say("Hier ist noch das Standard-Passwort eingestellt. Hast du am PC ein eigenes Schwarm-Passwort, gib es hier ein.", colors.orange)
+    else
+        say("Funk und Passwort sind eingestellt. Claude muss laufen (am PC: CLAUDE > START) und in Reichweite sein.")
+    end
+    if Kernel.hw.modem then
+        y = y + 1
+        say("Reichweite: Wireless Modem etwa 64 Bloecke (hoeher = weiter), Ender Modem ueberall.")
+    end
+    UI.button{ x = 2, y = math.min(y + 1, h - bh), w = math.min(w - 2, 22), h = bh, text = "SCHWARM-PASSWORT",
+               style = (wrongKey or Net.isDefault) and "primary" or nil, onClick = function()
+        Input.open(self, { title = "Schwarm-Passwort (wie am PC)", mask = true, maxLen = 32,
+                           hint = "Steht am PC unter INFO > EINSTELLUNGEN. Leer = Standard.",
+                           onOk = function(t)
+                               Kernel.foreign = nil
+                               Apps.byId.info:setPassword(t)
+                           end })
+    end }
+end
+
 -- ---------- Einrichten: noch kein Claude ----------
 function Claude:drawSetup()
     local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
     local top = UI.header("CLAUDE", not narrow and "Begleit-Droide" or nil)
-    if REMOTE or READONLY then
-        UI.empty(top + 2, "Kein Claude in Reichweite",
-                 "Claude wird am PC eingerichtet (CLAUDE > Turtle waehlen). Danach meldet er sich hier von selbst.")
-        return
-    end
+    if REMOTE or READONLY then return self:drawSearch(top) end
     local sw = Fleets and Fleets.UP
     local list = {}
     if sw then
@@ -9786,8 +9826,18 @@ function Extras.service()
             local owner = Settings.get("owner")
             if box and owner and owner ~= "" then
                 -- Die Chat Box meldet Fehler (Spieler offline ...) als Rueckgabe, nicht als Fehler.
-                local ok, res = pcall(box.sendToastToPlayer, msg.text, msg.title, owner, "GTS")
-                if not (ok and res) then pcall(box.sendMessageToPlayer, msg.text, owner, "GTS") end
+                -- Advanced Peripherals 0.8: sendToast/sendMessage mit Optionen-Tabelle.
+                local ok, res
+                if box.sendToastToPlayer then
+                    ok, res = pcall(box.sendToastToPlayer, msg.text, msg.title, owner, "GTS")
+                    if not (ok and res) then pcall(box.sendMessageToPlayer, msg.text, owner, "GTS") end
+                else
+                    ok, res = pcall(box.sendToast, { message = msg.text, title = msg.title, player = owner, prefix = "GTS" })
+                    if not (ok and res) then
+                        os.sleep(1.05)                     -- 0.8: eine Nachricht je Sekunde
+                        pcall(box.sendMessage, msg.text, { player = owner, prefix = "GTS" })
+                    end
+                end
             end
         end
         local env = Extras.find("environment_detector")
@@ -9796,7 +9846,7 @@ function Extras.service()
             pcall(function()
                 e.biome = env.getBiome():gsub("^.-:", "")
                 e.weather = env.isThunder() and "Gewitter" or (env.isRaining() and "Regen" or "klar")
-                e.moon = env.getMoonName()
+                if env.getMoon then e.moon = select(2, env.getMoon()) else e.moon = env.getMoonName() end
             end)
             Extras.env = e
         else
@@ -11738,6 +11788,9 @@ local function netRoutine()
             elseif payload and from == id and Kernel.onNet then
                 pcall(Kernel.onNet, id, payload)
             end
+        elseif type(proto) == "string" and #proto == 11 and proto:find("^g%x+$") and type(id) == "number" then
+            -- GTS-Funk mit einem ANDEREN Schwarm-Passwort (Hinweis fuer die Fernbedienung)
+            Kernel.foreign = { t = os.clock(), id = id }
         elseif proto == "SWARM_UPDATE" and type(id) == "number" then
             if not legacy[id] then Kernel.invalidate() end
             legacy[id] = os.clock()   -- alte Turtle (v4): Hinweis in SCHWARM

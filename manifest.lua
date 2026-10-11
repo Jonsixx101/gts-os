@@ -1,28 +1,28 @@
 -- GTS OS Manifest (wird von INFO > SYSTEM > UPDATE gelesen). Nicht von Hand aendern:
 -- release.py schreibt es mit Groesse und Pruefsummen neu.
 {
-  version = "8.3",
-  release = "1.2.1",
-  agent = "5.4",
+  version = "8.4",
+  release = "1.2.2",
+  agent = "5.5",
   date = "2026-10-11",
   notes = {
-    "GTS OS 1.2.1 - Claude findet seinen Weg",
-    "Claude: neue Wegfindung (plant wie NPCs, scannt unterwegs)",
-    "Claude: Punkte im Huegel/Block, kein falsches \"stecke fest\"",
-    "Claude: ortet Spieler auch ohne playerSpy",
-    "INFO > SYSTEM > AUFRAEUMEN: Muell weg, mehr Platz",
-    "Danach in CLAUDE: PROGRAMM-UPDATE antippen"
+    "GTS OS 1.2.2 - Advanced Peripherals 0.8",
+    "Claude + Miner: Geo Scanner von AP 0.8",
+    "Claude: Chat, Spieler, Monster mit AP 0.8",
+    "Fernbedienung: sagt, wenn Passwort fehlt",
+    "Danach: SCHWARM > UPDATE (Agent 5.5)",
+    "In CLAUDE: AGENT 5.5, dann PROGRAMM-UPDATE"
   },
   files = {
-    pc = { file = "gts_os.lua", size = 786512, sha256 = "7eca8dd258fc6e64db33904407aaf8edaa73fdb730f0cd60d14534a26c4d4482",
-      parts = { "4c1fe9481e91d2d8", "e4e116c749b17fe3", "b3a12a8f8d9516ca", "21a8f542a26fbc81", "19bac8cd86879e98", "1dbf69d2e1afaa2e", "63141e4d5108b4a8", "fcc8764f5b6063c6", "f6a8e2d6238728f0", "aab383987b1dcacf", "1af4de6a7e96fab3", "b94396f9d73b6ead", "02c249055b5e2212", "aab8d9ddc225f248", "aece70ba5c4f8f95", "0dedc40dc73e040b", "612fbedb663a3839", "3eab8acd5a848ddf", "adec7cf61586a622", "1bc1b51f3233f5c0", "965a1ef13c7a6cfc", "e91ac3d41c0ab807", "2fed553699d1ce13", "07d98dd60bd7b445", "5e14169a5fd5d1c7" } },
-    pocket = { file = "gts_pocket.lua", size = 544299, sha256 = "8e6ff01b77af4e221e72e1060d8748e6db427027a3c767ff9da014438f718dbc",
-      parts = { "7f06089c0e0de9ec", "1c6dd657f70f6a0c", "2ab5c81efaab3648", "3fbfd82ab8f79f94", "49228ee525ddc80a", "0e380bed067ca546", "f03f932bca4a614a", "4cb25e9e8a13a8e5", "6aad16cfe241ed37", "21297d8d43f7e1d0", "ddf1eb825567e001", "23773da4f24c5bcc", "1960c425ccb42cb9", "6677044abd5d7af5", "4fdc41788856f8a6", "364c002c2bc5594d", "050faafd307714a9" } },
-    phone = { file = "gts_phone.lua", size = 544298, sha256 = "94bdb9670f3bbedf6ae6fb655cedc413870440ce4db58cf6e08b10879fb28b98",
-      parts = { "9925d44ad21e935c", "85d01d11e9829acb", "f3968e56c16ff219", "ec32c72108c31974", "51eb4bf989b90a93", "779922ef6d3b307a", "d2abc6b1fe61d799", "1c31da3e5fef3e67", "3865ca11bf4300ff", "b30330e158028629", "f1ef997b776aa333", "6c5b67a02b00ab16", "44ef1cc241f72313", "b61049cf01a62466", "0a7cf2f619bdb9b5", "0c2cdf8ef65b69d2", "d994b4b874da928d" } },
-    claude = { file = "gts_claude.lua", size = 544299, sha256 = "8ec0cc061dfbf5d23325dd96fc80d33fbcded983bea2380d89f4c7de6af62c11",
-      parts = { "15af8937ed3032af", "1c6dd657f70f6a0c", "2ab5c81efaab3648", "3fbfd82ab8f79f94", "49228ee525ddc80a", "0e380bed067ca546", "f03f932bca4a614a", "4cb25e9e8a13a8e5", "6aad16cfe241ed37", "21297d8d43f7e1d0", "ddf1eb825567e001", "23773da4f24c5bcc", "1960c425ccb42cb9", "6677044abd5d7af5", "4fdc41788856f8a6", "364c002c2bc5594d", "050faafd307714a9" } },
-    turtle = { file = "gts_turtle.lua", size = 123743, sha256 = "e1d70d39f10d598e512662c2c22a52d32a23df0412fb9f001f0f904a90a25236",
-      parts = { "3868422e68c8049b", "5c5e22011d597ab9", "403cbe6f43cd8b51", "98d118d39b770ab1" } },
+    pc = { file = "gts_os.lua", size = 796107, sha256 = "55b302015c523c1d28cefbc0a5f9f08cd8049ca9ee64df89cef74b6c7b389d5c",
+      parts = { "a3271912ff346255", "e4e116c749b17fe3", "b3a12a8f8d9516ca", "21a8f542a26fbc81", "56ec47d09d297830", "ec78bbc1ed293e03", "a0e068d66021bac0", "e3a2accdbf0bf56a", "98a45f475c059dd0", "37bb137d50981adf", "318f7c61aefc8baa", "898eb1990d3fa816", "c1bcdf3a39503d6d", "1604fd5bde8e277d", "db1369db3e1c46fb", "141985d025569d23", "4c7a716b5dde0486", "3a62687dd74199bd", "8fc25f6c88275fd8", "fb793fb686b43b53", "188cf432c2a8c0e1", "d4fc2a2d6f57dce1", "cccaf374779a1aa4", "105cc1c63b5c712b", "c3ac6392085ed049" } },
+    pocket = { file = "gts_pocket.lua", size = 547376, sha256 = "d9fdd8830d76b64528159d0d0813ea67c0cd1b37d05f4f8340c608d97ce6475e",
+      parts = { "52202a2207949403", "1c6dd657f70f6a0c", "2ab5c81efaab3648", "3fbfd82ab8f79f94", "49228ee525ddc80a", "0e380bed067ca546", "6468f391d9f0313c", "c331e508b55ca48c", "aefde2ea189dac09", "e6a96f85658ccfd5", "66a2841bc3db6b03", "3279b4196d70ba08", "8eef15f1accef119", "0c74f0990d7b5eae", "d24623000fca5eda", "cd1068d265b05335", "326a1f20c1b2077e" } },
+    phone = { file = "gts_phone.lua", size = 547375, sha256 = "ae27b9bdfb928988449142a30813f77b4dbec4924774bf7503de499e412f77cb",
+      parts = { "727ba60b4c8ba133", "85d01d11e9829acb", "f3968e56c16ff219", "ec32c72108c31974", "51eb4bf989b90a93", "779922ef6d3b307a", "5ad27bacd404e37d", "39412f1fdc62b195", "54fe5cff689fd8db", "56d8f22ab4ca7064", "b5cfddeab43235cb", "96b6adb5a6334307", "9b0e32832da7d858", "e8e365053315a15a", "79a6fab1907ab88a", "8d47092a758c3a6a", "f76e1c9e24730116" } },
+    claude = { file = "gts_claude.lua", size = 547376, sha256 = "7729d2f4296331854a42cbe2dc0eaebf3e2d574c35d52ca974e21574482fd9a8",
+      parts = { "cd1d047a9065262b", "1c6dd657f70f6a0c", "2ab5c81efaab3648", "3fbfd82ab8f79f94", "49228ee525ddc80a", "0e380bed067ca546", "6468f391d9f0313c", "c331e508b55ca48c", "aefde2ea189dac09", "e6a96f85658ccfd5", "66a2841bc3db6b03", "3279b4196d70ba08", "8eef15f1accef119", "0c74f0990d7b5eae", "d24623000fca5eda", "cd1068d265b05335", "326a1f20c1b2077e" } },
+    turtle = { file = "gts_turtle.lua", size = 125247, sha256 = "366c88eb78db1f04e0214ed2b7de1bfd0b8a94f896721b8cf75a15887cb0fe24",
+      parts = { "9ed56ec693f04165", "5c5e22011d597ab9", "6a851ed589f12dd3", "6b4f9ddfba58cb58" } },
   },
 }

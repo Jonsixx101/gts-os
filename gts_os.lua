@@ -34,8 +34,8 @@
 -- VERSION ist die interne Update-Nummer: steigt mit jeder Fassung und muss
 -- groesser als "8.0" sein (so hiess die erste Vollversion), sonst findet ein
 -- dort installiertes OS das Update nicht. Nirgends angezeigt.
-local VERSION = "8.3"
-local RELEASE = "1.2.1"
+local VERSION = "8.4"
+local RELEASE = "1.2.2"
 local EDITION = "pc"     -- "pocket" in gts_pocket.lua
 local READONLY = (EDITION ~= "pc")      -- Pocket/Handy: nur anzeigen, keine Befehle
 local PHONE = (EDITION == "phone")      -- GTS Phone: Handy fuer Freunde (Lager, Notizen, Rechner ...)
@@ -3661,9 +3661,9 @@ text = text .. table.concat(good, ", ")
 return #bad == 0, text
 ]===],
     ["claude.lua"] = [===[
--- GTS-PROG claude 2
+-- GTS-PROG claude 3
 -- ======================================================================
--- CLAUDE - Begleit-Droide fuer die Basis              (GTS OS 1.2.1, Agent 5.4)
+-- CLAUDE - Begleit-Droide fuer die Basis              (GTS OS 1.2.2, Agent 5.4)
 -- Laeuft dauerhaft auf einer Turtle. Gedacht als Begleiter: folgt, bewacht,
 -- patrouilliert, baut Boeden/Daecher/Waende, craftet Fackeln, fuehrt ein
 -- Besucher-Log und redet - trocken, selten und nur, wenn es passt.
@@ -3936,9 +3936,12 @@ function Map.scan(list, r)
     local solid, liquid = {}, {}
     local creates = {}
     for _, b in ipairs(list) do
-        if type(b) == "table" and type(b.name) == "string" and tonumber(b.x)
-           and not (b.x == 0 and b.y == 0 and b.z == 0) then          -- (0,0,0) = Claude selbst
-            local rx, ry, rz = T.offsetToRel(b.x, b.y, b.z)
+        local bx, by, bz
+        if type(b) == "table" then bx, by, bz = tonumber(b.x), tonumber(b.y), tonumber(b.z) end
+        if bx and by and bz then bx, by, bz = floor(bx + 0.5), floor(by + 0.5), floor(bz + 0.5) end
+        if type(b) == "table" and type(b.name) == "string" and bx and by and bz
+           and not (bx == 0 and by == 0 and bz == 0) then             -- (0,0,0) = Claude selbst
+            local rx, ry, rz = T.offsetToRel(bx, by, bz)
             local x, y, z = cx + rx, cy + ry, cz + rz
             local k = K(x, y, z)
             if isLiquid(b.name) then liquid[k] = true else solid[k] = true end
@@ -4148,6 +4151,69 @@ for _, n in ipairs({ "zombie", "zombie villager", "husk", "drowned", "skeleton",
                      "hoglin", "zoglin", "piglin brute", "breeze", "ravager" }) do HOSTILE[n] = true end
 Sense.HOSTILE = HOSTILE
 
+-- Advanced Peripherals 0.7 und 0.8 (beide gibt es fuer 1.21.1) sprechen
+-- verschieden: 0.8 hat scanBlocks statt scan, getPlayer statt getPlayerPos,
+-- sendMessage(text, { Optionen }), Chat-Ereignis (uuid, name, text, versteckt)
+-- statt (name, text, uuid, versteckt), Kasten-Abfragen schliessen die zweite
+-- Ecke ein, Wesen heissen "minecraft:zombie" und Spieler nur "minecraft:player".
+local APC = { uuids = {} }
+Sense.APC = APC
+function APC.scan(p, r)
+    local f = p.scanBlocks or p.scan
+    if type(f) ~= "function" then return nil, "Geo Scanner ohne Scan-Befehl" end
+    return f(r)
+end
+local function isUuid(s) return type(s) == "string" and s:find("^%x+%-%x+%-%x+%-%x+%-%x+$") ~= nil end
+-- -> name, text, versteckt, uuid
+function APC.chatArgs(a, b, c, d)
+    if type(c) == "string" and (a == nil or isUuid(a)) and type(b) == "string" then
+        if isUuid(a) then APC.uuids[a] = b end
+        return b, c, d, a
+    end
+    if isUuid(c) and type(a) == "string" then APC.uuids[c] = a end
+    return a, b, d, c
+end
+function APC.v8(p) return type(p.sendMessageToPlayer) ~= "function" and type(p.sendMessage) == "function" end
+-- Satz in den Chat (an einen Spieler oder alle in Reichweite). true = raus.
+function APC.say(p, text, to, prefix, range)
+    local ok, res, err
+    if APC.v8(p) then
+        ok, res, err = pcall(p.sendMessage, text, { player = to, prefix = prefix, brackets = "[]", bracketsColor = "&b", range = range })
+    elseif to then
+        ok, res, err = pcall(p.sendMessageToPlayer, text, to, prefix, "[]", "&b", range)
+    else
+        ok, res, err = pcall(p.sendMessage, text, prefix, "[]", "&b", range)
+    end
+    if ok and res then return true end
+    return false, tostring(ok and err or res)
+end
+function APC.playerPos(p, name)
+    local f = p.getPlayer or p.getPlayerPos
+    if type(f) ~= "function" then error("kein getPlayer", 0) end
+    return f(name)
+end
+-- Liegt der Spieler in [lo, hi) (Welt-Koordinaten, ganze Bloecke)?
+function APC.inBox(p, lo, hi, name)
+    local d = (type(p.getPlayer) == "function") and 1 or 0       -- 0.8: zweite Ecke zaehlt mit
+    local ok, r = pcall(p.isPlayerInCoords, { x = lo.x, y = lo.y, z = lo.z },
+                        { x = hi.x - d, y = hi.y - d, z = hi.z - d }, name)
+    return ok and r == true
+end
+-- Wesen aus scanEntities -> Name ("zombie villager" / Spielername oder nil),
+-- Spieler?, Versatz in ganzen Bloecken
+function APC.entity(e)
+    local n = e.name
+    if type(n) ~= "string" or not tonumber(e.x) then return nil end
+    local half = (e.displayName ~= nil) and 0.5 or 0              -- 0.8: von der Blockmitte aus
+    local ox, oy, oz = floor(e.x + half), floor(e.y + half + 0.01), floor(e.z + half)
+    if n == "minecraft:player" then
+        return APC.uuids[e.uuid], true, ox, oy, oz
+    end
+    if type(e.displayName) == "string" and e.displayName ~= "" then n = e.displayName
+    elseif n:find(":", 1, true) then n = n:gsub("^.-:", ""):gsub("_", " ") end
+    return n, false, ox, oy, oz
+end
+
 local function compassKnown() local _, c = T.world() return c ~= nil end
 
 -- Ohne playerSpy (Server-Config): Position ueber die Frage "steht Spieler X in
@@ -4157,10 +4223,7 @@ function Sense.locate(p, name, guess)
     if type(p.isPlayerInCoords) ~= "function" then return nil end
     local wx, wy, wz = T.relToWorld(pos.x, pos.y, pos.z)
     if not wx then return nil end
-    local function inBox(l, h)
-        local ok, r = pcall(p.isPlayerInCoords, { x = l.x, y = l.y, z = l.z }, { x = h.x, y = h.y, z = h.z }, name)
-        return ok and r == true
-    end
+    local function inBox(l, h) return APC.inBox(p, l, h, name) end
     local lo, hi
     if guess then
         lo = { x = guess.x - 8, y = guess.y - 8, z = guess.z - 8 }
@@ -4199,7 +4262,7 @@ function Sense.pollPlayers(extra)
             if not info[n] then
                 local r
                 if not Sense.noSpy then
-                    local ok, res2 = pcall(p.getPlayerPos, n)
+                    local ok, res2 = pcall(APC.playerPos, p, n)
                     if ok and type(res2) == "table" and tonumber(res2.x) then r = res2
                     elseif not ok then Sense.noSpy = true end           -- Config: playerSpy aus
                 end
@@ -4279,29 +4342,52 @@ function Sense.pollEnv(withMobs)
         local mobs, people = {}, {}
         local online = {}
         for _, n in ipairs(Sense.names or {}) do online[n] = true end
-        for _, e in ipairs(res.list) do
-            if type(e) == "table" and type(e.name) == "string" and tonumber(e.x) then
-                local ox, oy, oz = T.offsetToRel(floor(e.x), floor(e.y + 0.01), floor(e.z))
-                local rec = { name = e.name, x = pos.x + ox, y = pos.y + oy, z = pos.z + oz,
-                              hp = tonumber(e.health), id = e.id }
-                if HOSTILE[e.name:lower()] then mobs[#mobs + 1] = rec
-                elseif Sense.players[e.name] or online[e.name] then
-                    people[#people + 1] = rec
-                    -- ohne playerSpy und ohne Welt-Koordinaten: Spieler in der Naehe so sehen
-                    local pe = Sense.players[e.name]
-                    if Sense.noSpy and not (pe and pe.wx and now() - (pe.t or 0) < 3) then
-                        local wx, wy, wz = T.relToWorld(rec.x, rec.y, rec.z)
-                        if wx then
-                            Sense.setPlayer(e.name, wx, wy, wz, now(), true, { health = e.health, maxHealth = e.maxHealth })
-                        else
-                            pe = pe or { name = e.name }
-                            pe.x, pe.y, pe.z, pe.t, pe.near = rec.x, rec.y, rec.z, now(), true
-                            pe.d = hdist(rec.x, rec.z, pos.x, pos.z)
-                            Sense.players[e.name] = pe
-                        end
-                        Sense.players[e.name].fromEnv = true
-                    end
+        local seenP, unknown = {}, {}
+        local function person(name, rec, e)
+            rec.name = name
+            seenP[name] = true
+            people[#people + 1] = rec
+            -- ohne playerSpy und ohne Welt-Koordinaten: Spieler in der Naehe so sehen
+            local pe = Sense.players[name]
+            if Sense.noSpy and not (pe and pe.wx and now() - (pe.t or 0) < 3) then
+                local wx, wy, wz = T.relToWorld(rec.x, rec.y, rec.z)
+                if wx then
+                    Sense.setPlayer(name, wx, wy, wz, now(), true, { health = e.health, maxHealth = e.maxHealth })
+                else
+                    pe = pe or { name = name }
+                    pe.x, pe.y, pe.z, pe.t, pe.near = rec.x, rec.y, rec.z, now(), true
+                    pe.d = hdist(rec.x, rec.z, pos.x, pos.z)
+                    Sense.players[name] = pe
                 end
+                Sense.players[name].fromEnv = true
+            end
+        end
+        for _, e in ipairs(res.list) do
+            local name, isP, ex, ey, ez
+            if type(e) == "table" then name, isP, ex, ey, ez = APC.entity(e) end
+            if ex then
+                local ox, oy, oz = T.offsetToRel(ex, ey, ez)
+                local rec = { name = name or "?", x = pos.x + ox, y = pos.y + oy, z = pos.z + oz,
+                              hp = tonumber(e.health), id = e.id }
+                if not isP and name and HOSTILE[name:lower()] then mobs[#mobs + 1] = rec
+                elseif name and (isP or Sense.players[name] or online[name]) then person(name, rec, e)
+                elseif isP then unknown[#unknown + 1] = { rec = rec, e = e }
+                end
+            end
+        end
+        -- AP 0.8 nennt Spieler nicht beim Namen: ist genau einer unbekannt und genau
+        -- einer aus der Spielerliste noch nicht gesehen, ist er es (und bleibt es).
+        if #unknown == 1 then
+            local left
+            for n in pairs(online) do
+                if not seenP[n] then
+                    if left then left = false break end
+                    left = n
+                end
+            end
+            if left then
+                if type(unknown[1].e.uuid) == "string" then APC.uuids[unknown[1].e.uuid] = left end
+                person(left, unknown[1].rec, unknown[1].e)
             end
         end
         Sense.mobs, Sense.mobT, Sense.bodies = mobs, now(), people
@@ -4319,10 +4405,10 @@ function Sense.scan()
     local wait = 2.1 - (now() - Sense.scanT)
     if wait > 0 then sleep(wait) end
     local list, err = T.use("scanner", function(p)
-        local l, e = p.scan(8)
+        local l, e = APC.scan(p, 8)
         if type(l) ~= "table" and tostring(e):lower():find("cooldown") then
             sleep(2.1)                                    -- angelegt lassen und kurz warten
-            l, e = p.scan(8)
+            l, e = APC.scan(p, 8)
         end
         return l, e
     end)
@@ -4348,13 +4434,19 @@ function Sense.listen(sec)
     Sense.listenT = now()
     local ok, err = T.use("chat", function(p)
         local t0 = now()
+        local function heard(a, b, c, d)
+            -- hoert der PC mit, kommen Befehle von dort (dann ist nichts doppelt)
+            local user, msg, hidden = APC.chatArgs(a, b, c, d)
+            if now() > (Cmd.relayUntil or 0) then pcall(Cmd.chat, user, msg, hidden, now() - t0 < 0.15) end
+        end
+        Voice.held = {}
         Voice.flush(p)
         local tm = os.startTimer(sec)
         while true do
+            while #Voice.held > 0 do heard(table.unpack(table.remove(Voice.held, 1), 1, 4)) end
             local ev, a, b, c, d = os.pullEvent()
             if ev == "chat" then
-                -- hoert der PC mit, kommen Befehle von dort (dann ist nichts doppelt)
-                if now() > (Cmd.relayUntil or 0) then pcall(Cmd.chat, a, b, d, now() - t0 < 0.15) end
+                heard(a, b, c, d)
             elseif ev == "timer" and a == tm then
                 break
             elseif ev == "gts_pmsg" then
@@ -4363,6 +4455,7 @@ function Sense.listen(sec)
             if #Voice.queue > 0 then Voice.flush(p) end
         end
         Voice.flush(p)
+        while #Voice.held > 0 do heard(table.unpack(table.remove(Voice.held, 1), 1, 4)) end
         return true
     end)
     if not ok then
@@ -4867,17 +4960,35 @@ function Voice.say(key, vars, kind, to)
     return true
 end
 
+-- Warten, ohne Chat-Befehle zu verschlucken (os.sleep wirft andere Ereignisse weg)
+Voice.held = {}
+function Voice.wait(sec)
+    local tm = os.startTimer(sec)
+    while true do
+        local ev, a, b, c, d = os.pullEvent()
+        if ev == "timer" and a == tm then return end
+        if ev == "chat" and #Voice.held < 8 then Voice.held[#Voice.held + 1] = { a, b, c, d } end
+    end
+end
+
 function Voice.flush(p)
     while #Voice.queue > 0 do
         local m = table.remove(Voice.queue, 1)
-        local ok, res
-        if m.to then
-            ok, res = pcall(p.sendMessageToPlayer, m.text, m.to, "Claude", "[]", "&b", cfg.chatRange)
+        -- AP 0.8: eine Nachricht je Sekunde (sonst "on cooldown")
+        local gap = APC.v8(p) and 1.05 or 0.25
+        local function send(to)
+            local wait = gap - (now() - (Voice.sentT or -99))
+            if wait > 0 then Voice.wait(wait) end
+            local ok, err = APC.say(p, m.text, to, "Claude", cfg.chatRange)
+            Voice.sentT = now()
+            if not ok and err:lower():find("cooldown") then
+                Voice.wait(gap)
+                ok, err = APC.say(p, m.text, to, "Claude", cfg.chatRange)
+                Voice.sentT = now()
+            end
+            return ok
         end
-        if not (ok and res) then
-            pcall(p.sendMessage, m.text, "Claude", "[]", "&b", cfg.chatRange)
-        end
-        if #Voice.queue > 0 then os.sleep(0.25) end
+        if not (m.to and send(m.to)) then send(nil) end
     end
 end
 -- Ohne Chat Box: die Saetze stehen nur in der Fernbedienung (said/Log).
@@ -6217,7 +6328,7 @@ end
 ]===],
     ["gts_turtle.lua"] = [===[
 -- ======================================================================
--- GTS SCHWARM-AGENT v5.4 - Turtle-Client       (CC: Tweaked, MC 1.21.1)
+-- GTS SCHWARM-AGENT v5.5 - Turtle-Client       (CC: Tweaked, MC 1.21.1)
 -- Gegenstueck zu GTS OS 1.2 - als startup.lua auf jede Turtle (auch Claude).
 -- ======================================================================
 -- Der Agent bleibt dauerhaft auf der Turtle. Er
@@ -6243,7 +6354,7 @@ end
 --   [6] Welt und Funde     [12] Bildschirm und Start
 -- ======================================================================
 
-local VERSION = "5.4"
+local VERSION = "5.5"
 
 -- ======================================================================
 -- [1] KONFIGURATION
@@ -7457,7 +7568,36 @@ onCheck = function()
 end
 
 -- ---------- Geo Scanner ----------
-local function scan(radius) return withTool("scanner", function(p) return p.scan(radius) end) end
+-- Advanced Peripherals 0.8 heisst der Befehl scanBlocks (0.7: scan) und liefert
+-- Kommazahlen von der Blockmitte aus - hier auf ganze Bloecke gerundet.
+-- 0.8 hat ausserdem eine echte Abklingzeit von 2 s: dann kurz warten.
+local scanT = -99
+local function scan(radius)
+    local list, err = withTool("scanner", function(p)
+        local f = p.scanBlocks or p.scan
+        if type(f) ~= "function" then return nil, "Geo Scanner ohne Scan-Befehl" end
+        if p.scanBlocks then
+            local w = 2.05 - (os.clock() - scanT)
+            if w > 0 then os.sleep(w) end
+        end
+        local l, e = f(radius)
+        scanT = os.clock()
+        if type(l) ~= "table" and tostring(e):lower():find("cooldown") then
+            os.sleep(2.05)
+            l, e = f(radius)
+            scanT = os.clock()
+        end
+        return l, e
+    end)
+    if type(list) == "table" then
+        for _, b in ipairs(list) do
+            if type(b) == "table" and tonumber(b.x) and tonumber(b.y) and tonumber(b.z) then
+                b.x, b.y, b.z = math.floor(b.x + 0.5), math.floor(b.y + 0.5), math.floor(b.z + 0.5)
+            end
+        end
+    end
+    return list, err
+end
 -- Erz-Zaehlung des ganzen Chunks, in dem die Turtle steht.
 local function chunkAnalyze() return withTool("scanner", function(p) return p.chunkAnalyze() end) end
 
@@ -7508,7 +7648,15 @@ end
 local function tell(text)
     if not (tool.have.chat and data.owner) then return false end
     local ok = withTool("chat", function(p)
-        return p.sendMessageToPlayer(tostring(text):sub(1, 200), data.owner, "GTS")
+        text = tostring(text):sub(1, 200)
+        if type(p.sendMessageToPlayer) == "function" then return p.sendMessageToPlayer(text, data.owner, "GTS") end
+        -- AP 0.8: Optionen-Tabelle, hoechstens eine Nachricht je Sekunde
+        local r, e = p.sendMessage(text, { player = data.owner, prefix = "GTS" })
+        if not r and tostring(e):lower():find("cooldown") then
+            os.sleep(1.05)
+            r, e = p.sendMessage(text, { player = data.owner, prefix = "GTS" })
+        end
+        return r, e
     end)
     return ok and true or false
 end
@@ -10455,7 +10603,12 @@ function Claude:service()
     if REMOTE or READONLY then return end
     local start = os.clock()
     while true do
-        local _, user, msg = os.pullEvent("chat")
+        local _, a, b, c = os.pullEvent("chat")
+        -- Advanced Peripherals 0.7: (name, text, uuid) - 0.8: (uuid, name, text)
+        local user, msg = a, b
+        if type(c) == "string" and type(b) == "string" and (a == nil or tostring(a):find("^%x+%-%x+%-%x+%-%x+%-%x+$")) then
+            user, msg = b, c
+        end
         -- (die Chat Box liefert beim Start die letzte Nachricht noch einmal)
         if os.clock() - start > 3 and type(user) == "string" and type(msg) == "string" and msg:lower():find("^%s*@?claude") then
             for id, u in pairs(self.units) do
@@ -11005,15 +11158,50 @@ function Claude:drawLog(u)
     end)
 end
 
+-- ---------- Fernbedienung: Claude meldet sich nicht ----------
+-- Haeufigste Gruende: anderes Schwarm-Passwort (dann hoert man GTS-Funk, kann
+-- ihn aber nicht lesen), kein Modem im Pocket Computer, zu weit weg.
+function Claude:drawSearch(top)
+    local w, h, bh = Kernel.w, Kernel.h, UI.bh()
+    local y = top + 1
+    UI.center(y, "Suche Claude ...", colors.white)
+    y = y + 2
+    local function say(text, color)
+        for _, l in ipairs(UI.wrap(text, w - 2)) do
+            if y < h - bh - 1 then UI.text(2, y, l, color or colors.lightGray) y = y + 1 end
+        end
+    end
+    local f = Kernel.foreign
+    local wrongKey = f and os.clock() - f.t < 90
+    if not Kernel.hw.modem then
+        say("Kein Funk-Modem! Die Fernbedienung braucht einen Pocket Computer mit Wireless oder Ender Modem.", colors.red)
+    elseif wrongKey then
+        say("Ich hoere GTS-Funk (#" .. tostring(f.id) .. "), aber mit einem anderen Passwort. Gib hier das Schwarm-Passwort vom PC ein.", colors.orange)
+    elseif Net.isDefault then
+        say("Hier ist noch das Standard-Passwort eingestellt. Hast du am PC ein eigenes Schwarm-Passwort, gib es hier ein.", colors.orange)
+    else
+        say("Funk und Passwort sind eingestellt. Claude muss laufen (am PC: CLAUDE > START) und in Reichweite sein.")
+    end
+    if Kernel.hw.modem then
+        y = y + 1
+        say("Reichweite: Wireless Modem etwa 64 Bloecke (hoeher = weiter), Ender Modem ueberall.")
+    end
+    UI.button{ x = 2, y = math.min(y + 1, h - bh), w = math.min(w - 2, 22), h = bh, text = "SCHWARM-PASSWORT",
+               style = (wrongKey or Net.isDefault) and "primary" or nil, onClick = function()
+        Input.open(self, { title = "Schwarm-Passwort (wie am PC)", mask = true, maxLen = 32,
+                           hint = "Steht am PC unter INFO > EINSTELLUNGEN. Leer = Standard.",
+                           onOk = function(t)
+                               Kernel.foreign = nil
+                               Apps.byId.info:setPassword(t)
+                           end })
+    end }
+end
+
 -- ---------- Einrichten: noch kein Claude ----------
 function Claude:drawSetup()
     local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
     local top = UI.header("CLAUDE", not narrow and "Begleit-Droide" or nil)
-    if REMOTE or READONLY then
-        UI.empty(top + 2, "Kein Claude in Reichweite",
-                 "Claude wird am PC eingerichtet (CLAUDE > Turtle waehlen). Danach meldet er sich hier von selbst.")
-        return
-    end
+    if REMOTE or READONLY then return self:drawSearch(top) end
     local sw = Fleets and Fleets.UP
     local list = {}
     if sw then
@@ -15532,8 +15720,18 @@ function Extras.service()
             local owner = Settings.get("owner")
             if box and owner and owner ~= "" then
                 -- Die Chat Box meldet Fehler (Spieler offline ...) als Rueckgabe, nicht als Fehler.
-                local ok, res = pcall(box.sendToastToPlayer, msg.text, msg.title, owner, "GTS")
-                if not (ok and res) then pcall(box.sendMessageToPlayer, msg.text, owner, "GTS") end
+                -- Advanced Peripherals 0.8: sendToast/sendMessage mit Optionen-Tabelle.
+                local ok, res
+                if box.sendToastToPlayer then
+                    ok, res = pcall(box.sendToastToPlayer, msg.text, msg.title, owner, "GTS")
+                    if not (ok and res) then pcall(box.sendMessageToPlayer, msg.text, owner, "GTS") end
+                else
+                    ok, res = pcall(box.sendToast, { message = msg.text, title = msg.title, player = owner, prefix = "GTS" })
+                    if not (ok and res) then
+                        os.sleep(1.05)                     -- 0.8: eine Nachricht je Sekunde
+                        pcall(box.sendMessage, msg.text, { player = owner, prefix = "GTS" })
+                    end
+                end
             end
         end
         local env = Extras.find("environment_detector")
@@ -15542,7 +15740,7 @@ function Extras.service()
             pcall(function()
                 e.biome = env.getBiome():gsub("^.-:", "")
                 e.weather = env.isThunder() and "Gewitter" or (env.isRaining() and "Regen" or "klar")
-                e.moon = env.getMoonName()
+                if env.getMoon then e.moon = select(2, env.getMoon()) else e.moon = env.getMoonName() end
             end)
             Extras.env = e
         else
@@ -17484,6 +17682,9 @@ local function netRoutine()
             elseif payload and from == id and Kernel.onNet then
                 pcall(Kernel.onNet, id, payload)
             end
+        elseif type(proto) == "string" and #proto == 11 and proto:find("^g%x+$") and type(id) == "number" then
+            -- GTS-Funk mit einem ANDEREN Schwarm-Passwort (Hinweis fuer die Fernbedienung)
+            Kernel.foreign = { t = os.clock(), id = id }
         elseif proto == "SWARM_UPDATE" and type(id) == "number" then
             if not legacy[id] then Kernel.invalidate() end
             legacy[id] = os.clock()   -- alte Turtle (v4): Hinweis in SCHWARM

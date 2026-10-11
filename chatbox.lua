@@ -37,7 +37,12 @@ end
 local function send(box, name, text)
     local lastErr
     for _ = 1, MAX_TRIES do
-        local ok, res, err = pcall(box.sendMessage, text, name, BRACKETS)
+        local ok, res, err
+        if box.sendMessageToPlayer then       -- Advanced Peripherals 0.7
+            ok, res, err = pcall(box.sendMessage, text, name, BRACKETS)
+        else                                  -- 0.8: Optionen als Tabelle
+            ok, res, err = pcall(box.sendMessage, text, { prefix = name, brackets = BRACKETS })
+        end
         if ok and res then return true end
         lastErr = ok and err or res
         sleep(0.5)
