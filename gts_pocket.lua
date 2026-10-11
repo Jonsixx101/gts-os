@@ -1,10 +1,11 @@
 -- ======================================================================
--- GTS OS Pocket 1.1.0 - Kernel, UI und Apps            (CC: Tweaked, MC 1.21.1)
+-- GTS OS Pocket 1.2.0 - Kernel, UI und Apps            (CC: Tweaked, MC 1.21.1)
 -- by Jonsi
 -- ======================================================================
 -- Laeuft auf dem Advanced Computer, am liebsten mit Advanced Monitor
 -- (5x2 Bloecke = 100x24 Zeichen, Touch). Fuer den Advanced Pocket
--- Computer gibt es eine eigene Fassung (gts_pocket.lua, Fortschritts-Tablet).
+-- Computer gibt es eigene Fassungen: gts_pocket.lua (Fortschritts-Tablet),
+-- gts_phone.lua (Handy fuer Freunde) und gts_claude.lua (Claude-Fernbedienung).
 --
 -- Aufbau (angelehnt an den Opus-Kernel):
 --   [1] Konfiguration, Farbschema, Verschluesselung, Einstellungen
@@ -14,6 +15,7 @@
 --   [5] Home / Boot
 --   [6] Notizen + Editor + Bildschirmtastatur + Drucken
 --   [7] Flotten   Schwarm (Turtles), Turtle-Programme, Funde, P. Craft
+--        Claude   Begleit-Droide (eigene App, Programm "claude" auf einer Turtle)
 --   [8] Daten     Disketten sichern, Notizen und OS auf Diskette
 --   [9] Web       Textbrowser (Wikis, Dokus, Pastebin)
 --   [10] Rechner  Taschenrechner mit Prozent und Stacks
@@ -27,12 +29,13 @@
 --   [16] Dienste und Start
 -- ======================================================================
 
--- Version: RELEASE wird angezeigt (1.1.0 = erstes Update der Vollversion).
+-- Version: RELEASE wird angezeigt (1.1.0 = erstes Update der Vollversion,
+-- 1.2.0 = Claude).
 -- VERSION ist die interne Update-Nummer: steigt mit jeder Fassung und muss
 -- groesser als "8.0" sein (so hiess die erste Vollversion), sonst findet ein
 -- dort installiertes OS das Update nicht. Nirgends angezeigt.
-local VERSION = "8.1"
-local RELEASE = "1.1.0"
+local VERSION = "8.2"
+local RELEASE = "1.2.0"
 local EDITION = "pocket" -- "pc" in gts_os.lua
 local READONLY = (EDITION ~= "pc")      -- Pocket/Handy: nur anzeigen, keine Befehle
 local PHONE = (EDITION == "phone")      -- GTS Phone: Handy fuer Freunde (Lager, Notizen, Rechner ...)
@@ -1660,13 +1663,22 @@ end
 
 -- Setzt Buttons nebeneinander, sodass der letzte bei xr endet.
 -- Rueckgabe: x des ersten Buttons.
-function UI.buttonsRight(list, y, xr)
+function UI.buttonsRight(list, y, xr, xl)
     local total = -1
     for _, b in ipairs(list) do
         b.w = b.w or (#b.text + 2)
         total = total + b.w + 1
     end
-    local x = xr - total + 1
+    -- zu breit (schmaler Schirm): erst den Rand in den Buttons weglassen
+    xl = xl or 1
+    if xr - total + 1 < xl then
+        total = -1
+        for _, b in ipairs(list) do
+            if b.w == #b.text + 2 then b.w = #b.text end
+            total = total + b.w + 1
+        end
+    end
+    local x = math.max(xl, xr - total + 1)
     local left = x
     for _, b in ipairs(list) do
         b.x, b.y = x, y
@@ -1821,7 +1833,7 @@ function UI.taskLayout()
             need = need + #app.title + 2
         end
     end
-    local out = { W = W, n = #Apps.list, tabs = {}, list = tabs, homeW = 6 }
+    local out = { W = W, n = #Apps.list, tabs = {}, list = tabs, homeW = (EDITION == "claude") and 8 or 6 }
     local tray = 3 + 7                      -- Ausschalter + Uhr
     local x = out.homeW + 2
     if x + need - 1 + 1 + tray <= W then
@@ -1857,7 +1869,8 @@ function UI.taskbar()
     local app = Kernel.app
     UI.surface = colors.gray
     UI.fill(1, y, W, bh, colors.gray)
-    drawTab(1, y, L.homeW, "HOME", app.id == "home", function() Kernel.open("home") end)
+    local home = Apps.byId.home
+    drawTab(1, y, L.homeW, (EDITION == "claude") and "CLAUDE" or "HOME", app == home, function() Kernel.open("home") end)
     local x = L.homeW + 2
     if L.mode == "tabs" then
         for _, t in ipairs(L.tabs) do
@@ -2453,6 +2466,14 @@ local function homeCards()
         cards[#cards + 1] = { label = "SCHWARM", value = (total == 0) and "keine Turtles" or (online .. " von " .. total .. " online"),
                               short = online .. "/" .. total, dot = (online > 0) and colors.lime or colors.lightGray, app = "swarm" }
     end
+    local cl = Apps.byId.claude
+    local cu = cl and cl.unit and cl:unit()
+    if cu then
+        local run = cu.prog == "claude" and not cu.paused and cu.online
+        local m = run and cu.ext and cu.ext.m
+        cards[#cards + 1] = { label = "CLAUDE", value = (not cu.online) and "offline" or (run and ((cl.MODES and cl.MODES[m or ""]) or "an"):lower() or "aus"),
+                              short = run and "an" or "aus", dot = run and colors.lime or colors.orange, app = "claude" }
+    end
     if Finds and #Finds.list > 0 then
         cards[#cards + 1] = { label = "FUNDE", value = #Finds.list .. " offen", short = tostring(#Finds.list),
                               dot = colors.yellow, app = "swarm", finds = true }
@@ -2965,7 +2986,7 @@ Apps.register(Editor)
 -- aendern. Die Buttons DD, CHUNK und T uebertragen sie an die Turtles.
 -- gts_turtle.lua ist der Agent selbst: UPDATE spielt ihn auf alle Turtles,
 -- TURTLE-DISK (DATEN) schreibt ihn als Installer auf eine Diskette.
-local PROGRAM_FILES, TURTLE_INSTALLER, GPS_INSTALLER = {}, "", ""   -- (Pocket: leer)
+local PROGRAM_FILES, TURTLE_INSTALLER, GPS_INSTALLER, LUA_APP_FILES = {}, "", "", {}   -- (Pocket: leer)
 -- (nur in gts_os.lua)
 
 -- ======================================================================
@@ -3160,13 +3181,24 @@ function TurtleProgs.agentCode()
 end
 
 function TurtleProgs.install()
+    -- Lua-Apps (z.B. APIproject.lua): einmal anlegen. Wer sie loescht, bekommt
+    -- sie nicht wieder (Merker in /gts), eine eigene Fassung bleibt unangetastet.
+    pcall(function()
+        for file, code in pairs(LUA_APP_FILES) do
+            local path, mark = fs.combine(CONFIG.scriptDir, file), "/gts/.app_" .. file
+            if not fs.exists(mark) then
+                if not fs.exists(path) then writeAll(path, code) end
+                writeAll(mark, "1")
+            end
+        end
+    end)
     pcall(function()
         fs.makeDir(CONFIG.progDir)
         for file, code in pairs(PROGRAM_FILES) do
             local path = fs.combine(CONFIG.progDir, file)
             local cur = fs.exists(path) and readAll(path) or nil
-            if file == "gts_turtle.lua" then
-                -- alte Kopie des Agenten aufraeumen (nur wenn sie nicht neuer ist)
+            if file == "gts_turtle.lua" or file == "claude.lua" then
+                -- Agent und Claude bleiben nur im OS (spart Platz); eine eigene, NEUERE Kopie wird benutzt
                 if cur and not verLess(TurtleProgs.version(file, code), TurtleProgs.version(file, cur)) then fs.delete(path) end
             elseif not cur or verLess(TurtleProgs.version(file, cur), TurtleProgs.version(file, code)) then
                 if writeAll(path, code) and cur then Kernel.log("INFO", "Turtle-Programm aktualisiert: " .. file) end
@@ -3181,7 +3213,7 @@ function TurtleProgs.custom()
     if not fs.isDir(CONFIG.progDir) then return out end
     for _, file in ipairs(fs.list(CONFIG.progDir)) do
         local name = file:match("^([%w_%-]+)%.lua$")
-        if name and name ~= "gts_turtle" and name ~= "dd" and name ~= "chunk" and name ~= "test" and #out < 8 then
+        if name and name ~= "gts_turtle" and name ~= "dd" and name ~= "chunk" and name ~= "test" and name ~= "claude" and #out < 8 then
             out[#out + 1] = name
         end
     end
@@ -3225,7 +3257,7 @@ local legacy = {}   -- alte Turtles (v4, unverschluesselt): id -> Zeitpunkt
 Geo = { gps = nil, asked = -100 }
 
 function Geo.here()
-    if EDITION == "pocket" and os.clock() - Geo.asked > 10 then
+    if (EDITION == "pocket" or EDITION == "claude") and os.clock() - Geo.asked > 10 then
         Geo.asked = os.clock()
         os.queueEvent("gts_gps")
     end
@@ -4463,6 +4495,807 @@ makeFleet{
         { label = "BASIS", cmd = "HOME", fg = colors.lightBlue, confirm = true },
     },
 }
+
+-- ======================================================================
+-- [7c] CLAUDE: der Begleit-Droide
+-- ======================================================================
+-- Eine Turtle mit dem Programm "claude" (Agent ab v5.4) meldet sich mit
+-- role = "claude". Sie erscheint NICHT im Schwarm (also nie bei ALLE,
+-- PLANER usw.), sondern hier. Befehle gehen als CMD "PMSG" direkt an das
+-- laufende Programm, Antworten (Karte, Log, Einstellungen) kommen als "CLD".
+-- Am PC hoert die Chat Box mit und reicht "$claude ..." weiter.
+-- Die Fernbedienung (gts_claude.lua, EDITION "claude") ist dieselbe App.
+local REMOTE = (EDITION == "claude")
+local Claude = { id = "claude", title = "CLAUDE", order = 3.5, view = "status", units = {}, count = 0,
+                 modePage = { page = 1 }, logPage = { page = 1 }, setupPage = { page = 1 }, group = "FREI",
+                 zoom = 1, mapT = -99, logT = -99, cfgT = -99, relayT = -999 }
+
+local CL_MODES = {
+    idle = "FREI", stay = "BLEIBT", follow = "FOLGT", come = "KOMMT", home = "FLIEGT HEIM", patrol = "PATROUILLE",
+    guard = "WACHE", build = "BAUT", craft = "CRAFTET", torch = "FACKEL", hide = "VERSTECKT SICH", seek = "SUCHT",
+    nofuel = "TANK LEER",
+}
+
+Claude.MODES = CL_MODES
+local function clNum(v) return (type(v) == "number" and v == v and math.abs(v) < 1e13) and v or nil end
+local function clCell(t)
+    if type(t) == "table" and clNum(t.x) and clNum(t.y) and clNum(t.z) then
+        return { x = math.floor(t.x), y = math.floor(t.y), z = math.floor(t.z) }
+    end
+end
+local function clText(v, n) return type(v) == "string" and (v:sub(1, n):gsub("[^\32-\126\160-\255]", "?")) or nil end
+
+-- Herzschlag (UP mit role = "claude") und Antworten (CLD)
+function Claude:receive(id, msg)
+    if msg.t == "CLD" then return self:reply(id, msg) end
+    local u = self.units[id]
+    if not u then
+        if self.count >= 4 then return false end
+        u = { id = id }
+        self.units[id] = u
+        self.count = self.count + 1
+        Kernel.log("INFO", "Claude #" .. id .. " verbunden")
+        -- war bisher eine normale Schwarm-Turtle: dort austragen
+        local sw = Fleets and Fleets.UP
+        if sw and sw.store and sw.store[id] then
+            sw.store[id] = nil
+            sw.count = math.max(0, (sw.count or 1) - 1)
+        end
+    end
+    u.seen, u.online = os.clock(), true
+    u.status = clText(msg.status, 14) or "?"
+    u.label = clText(msg.label, 12)
+    u.v = clText(msg.v, 8)
+    u.fuel = (clNum(msg.fuel) or msg.fuel == "unlimited") and msg.fuel or nil
+    u.fuelMax = clNum(msg.fuelMax)
+    u.inv = clNum(msg.inv)
+    u.wpos = clCell(msg.wpos)
+    u.wf = clNum(msg.wf) and (math.floor(msg.wf) % 4) or nil
+    u.base = clCell(msg.base)
+    u.prog, u.paused = clText(msg.prog, 12), msg.paused == true
+    u.tools = {}
+    if type(msg.tools) == "table" then
+        for i = 1, math.min(#msg.tools, 12) do if type(msg.tools[i]) == "string" then u.tools[msg.tools[i]] = true end end
+    end
+    u.sword = msg.sword == true
+    if type(msg.progs) == "table" and type(msg.progs.claude) == "string" then u.hash = msg.progs.claude:sub(1, 16) end
+    local x = type(msg.ext) == "table" and msg.ext or nil
+    if x then
+        local e = { m = clText(x.m, 10), s = clText(x.s, 40), tg = clText(x.tg, 16), said = clText(x.said, 120),
+                    saidT = clNum(x.saidT), mute = clNum(x.mute), kn = clNum(x.kn), kills = clNum(x.kills),
+                    cv = clNum(x.cv), lv = clNum(x.lv), wp = clNum(x.wp), zn = clNum(x.zn), al = clText(x.al, 30),
+                    torches = clNum(x.torches), spy = x.spy ~= false, scan = clText(x.scan, 40), near = {}, mobs = {} }
+        if type(x.b) == "table" then e.b = { d = clNum(x.b.d) or 0, n = clNum(x.b.n) or 0, k = clText(x.b.k, 8) } end
+        for _, list in ipairs({ { "near", 6 }, { "mobs", 6 } }) do
+            local src = x[list[1]]
+            if type(src) == "table" then
+                for i = 1, math.min(#src, list[2]) do
+                    local p = src[i]
+                    if type(p) == "table" and clCell(p) then
+                        local c = clCell(p)
+                        c.n, c.d = clText(p.n, 16) or "?", clNum(p.d)
+                        e[list[1]][#e[list[1]] + 1] = c
+                    end
+                end
+            end
+        end
+        if e.said and e.said ~= (u.ext and u.ext.said) and e.saidT ~= (u.ext and u.ext.saidT) then
+            u.sayLog = u.sayLog or {}
+            table.insert(u.sayLog, 1, { t = e.saidT, text = e.said })
+            while #u.sayLog > 8 do table.remove(u.sayLog) end
+        end
+        if e.al and e.al ~= (u.ext and u.ext.al) then Kernel.notify("Claude: " .. e.al, colors.orange, "claude") end
+        -- neue Einstellungen / neues Log: bei Bedarf nachladen
+        if self.cfg and e.cv and e.cv ~= self.cfgV and self.sel == id then self.cfgT = -99 end
+        if self.log and e.lv and e.lv ~= self.logV and self.sel == id then self.logT = -99 end
+        u.ext = e
+    else
+        u.ext = nil
+    end
+    if not self.sel or not (self.units[self.sel] and self.units[self.sel].online) then self.sel = id end
+    return Kernel.app == self or (REMOTE and Kernel.app.id == "home")
+end
+
+function Claude:reply(id, msg)
+    if id ~= self.sel then return false end
+    if msg.kind == "map" and type(msg.rows) == "table" then
+        local rows = {}
+        for i = 1, math.min(#msg.rows, 97) do rows[i] = clText(msg.rows[i], 97) or "" end
+        local function cells(list, n)
+            local out = {}
+            for i = 1, math.min(type(list) == "table" and #list or 0, n) do
+                local c = clCell(list[i])
+                if c then out[#out + 1] = c end
+            end
+            return out
+        end
+        local zones = {}
+        for i = 1, math.min(type(msg.zones) == "table" and #msg.zones or 0, 16) do
+            local z = msg.zones[i]
+            if type(z) == "table" and clNum(z.x1) and clNum(z.x2) and clNum(z.z1) and clNum(z.z2) then
+                zones[#zones + 1] = { x1 = z.x1, x2 = z.x2, z1 = z.z1, z2 = z.z2 }
+            end
+        end
+        self.map = { rows = rows, cx = clNum(msg.cx) or 0, cz = clNum(msg.cz) or 0, r = clNum(msg.r) or 0,
+                     world = msg.world == true, wps = cells(msg.wps, 24), zones = zones, home = clCell(msg.home),
+                     park = clCell(msg.park), center = clCell(msg.center), known = clNum(msg.known) }
+        return Kernel.app == self or REMOTE
+    elseif msg.kind == "log" then
+        local function list(src, n, fn)
+            local out = {}
+            if type(src) ~= "table" then return out end
+            for i = math.max(1, #src - n + 1), #src do
+                local v = fn(src[i])
+                if v then out[#out + 1] = v end
+            end
+            return out
+        end
+        self.log = {
+            list = list(msg.list, 60, function(e) return type(e) == "table" and { t = clNum(e.t) or 0, k = clText(e.k, 8) or "", text = clText(e.text, 80) or "" } end),
+            visits = list(msg.visits, 40, function(v) return type(v) == "table" and { n = clText(v.n, 16) or "?", a = clNum(v.a) or 0, d = clNum(v.d) } end),
+            people = list(msg.people, 40, function(p) return type(p) == "table" and { n = clText(p.n, 16) or "?", first = clNum(p.first), last = clNum(p.last), visits = clNum(p.visits) or 0, here = p.here == true } end),
+            kills = clNum(msg.kills) or 0,
+        }
+        self.logV = clNum(msg.v)
+        return Kernel.app == self or REMOTE
+    elseif msg.kind == "cfg" and type(msg.cfg) == "table" then
+        self.cfg, self.cfgV = msg.cfg, clNum(msg.v)
+        return Kernel.app == self or REMOTE
+    end
+    return false
+end
+
+function Claude:unit() return self.sel and self.units[self.sel] end
+function Claude:owner()
+    local o = Settings.get("owner")
+    return (type(o) == "string" and o ~= "") and o or nil
+end
+
+-- An das laufende Programm (PMSG). Ohne Modem/Claude: Hinweis.
+function Claude:send(args, id)
+    id = id or self.sel
+    local u = id and self.units[id]
+    if not (u and Kernel.hw.modem) then
+        Kernel.notify(Kernel.hw.modem and "Claude nicht in Reichweite" or "Kein Modem angeschlossen", colors.red)
+        return false
+    end
+    Kernel.seq = Kernel.seq + 1
+    Kernel.post(id, { t = "CMD", cmd = "PMSG", seq = Kernel.seq, args = args })
+    return true
+end
+function Claude:cmd(text) return self:send({ op = "cmd", text = text, user = self:owner() }) end
+function Claude:agentCmd(cmd, args)
+    local u = self:unit()
+    if not (u and Kernel.hw.modem) then return Kernel.notify("Claude nicht in Reichweite", colors.red) end
+    Kernel.seq = Kernel.seq + 1
+    Kernel.post(u.id, { t = "CMD", cmd = cmd, seq = Kernel.seq, args = args })
+end
+
+-- Neuigkeiten aus dem OS (Funde des Schwarms): Claude erzaehlt sie, wenn jemand da ist
+function Claude:news(text)
+    for id, u in pairs(self.units) do
+        if u.online then self:send({ op = "news", text = tostring(text):sub(1, 100) }, id) end
+    end
+end
+
+function Claude:tick()
+    local now, changed = os.clock(), false
+    for id, u in pairs(self.units) do
+        if u.online and now - u.seen > CONFIG.offlineAfter then
+            u.online, changed = false, true
+            Kernel.log("WARN", "Claude #" .. id .. " offline")
+        end
+    end
+    local u = self:unit()
+    local open = Kernel.app == self or (REMOTE and Kernel.app.id == "home")
+    if u and u.online and open then
+        if self.view == "map" and now - self.mapT > 8 then self.mapT = now self:send({ op = "map", r = self:mapRadius() }) end
+        if self.view == "log" and now - self.logT > 20 then self.logT = now self:send({ op = "log" }) end
+        if (self.view == "modes" or not self.cfg) and now - self.cfgT > 30 then self.cfgT = now self:send({ op = "cfg" }) end
+    end
+    -- PC mit Chat Box: Claude sagen, dass Befehle von hier kommen (keine Doppelten)
+    if not REMOTE and not READONLY and now - self.relayT > 300 and Extras.find("chat_box") then
+        self.relayT = now
+        for id, x in pairs(self.units) do if x.online then self:send({ op = "relay", on = true }, id) end end
+    end
+    return (changed or (open and now % 2 < 1)) and open
+end
+
+-- Chat-Weiterleitung (nur PC): "$claude ..." aus dem Spiel an Claude
+function Claude:service()
+    if REMOTE or READONLY then return end
+    local start = os.clock()
+    while true do
+        local _, user, msg = os.pullEvent("chat")
+        -- (die Chat Box liefert beim Start die letzte Nachricht noch einmal)
+        if os.clock() - start > 3 and type(user) == "string" and type(msg) == "string" and msg:lower():find("^%s*@?claude") then
+            for id, u in pairs(self.units) do
+                if u.online then self:send({ op = "chat", user = user:sub(1, 16), msg = msg:sub(1, 120) }, id) end
+            end
+        end
+    end
+end
+
+function Claude:onEnter(view)
+    self.input, self.pick = nil, nil
+    if view == "map" or view == "log" or view == "modes" or view == "status" then self.view = view end
+    self.mapT, self.logT = -99, -99
+end
+function Claude:insert(text) return Input.insert(self, text) end
+function Claude:key(action) return Input.key(self, action) end
+function Claude:onChar(ch) Input.insert(self, ch) end
+function Claude:onPaste(text) Input.insert(self, text) end
+function Claude:onKey(code) Input.onKey(self, code) end
+function Claude:onScroll(dir)
+    if self.view == "map" then self.zoom = math.max(1, math.min(3, self.zoom + dir)) self.mapT = -99 return end
+    local st = (self.view == "log") and self.logPage or ((self.view == "modes") and self.modePage or nil)
+    if st then st.page = math.max(1, st.page + dir) end
+end
+
+-- ---------- Zeichnen ----------
+local function clAgo(t)
+    if not t then return "-" end
+    local d = math.floor(os.epoch("utc") / 1000) - t
+    if d < 60 then return "gerade" end
+    if d < 3600 then return math.floor(d / 60) .. " min" end
+    if d < 86400 then return math.floor(d / 3600) .. " h" end
+    return math.floor(d / 86400) .. " d"
+end
+
+function Claude:tabs(top)
+    local list = { { "status", "STATUS" }, { "map", "KARTE" }, { "modes", "MODI" }, { "log", "LOG" } }
+    if Claude.compact() then table.insert(list, 2, { "pad", "STEUER" }) end
+    local function open(v) self.view = v self.mapT, self.logT, self.cfgT, self.pick = -99, -99, -99, nil end
+    if UI.narrow() then
+        -- schmal (Pocket): < SEITE > zum Durchblaettern
+        local w, idx = Kernel.w, 1
+        for i, t in ipairs(list) do if t[1] == self.view then idx = i end end
+        local function go(d) open(list[(idx - 1 + d) % #list + 1][1]) end
+        UI.button{ x = 1, y = top, w = 4, h = 1, text = "\17", onClick = function() go(-1) end }
+        UI.button{ x = 6, y = top, w = w - 10, h = 1, text = list[idx][2] .. " " .. idx .. "/" .. #list, style = "primary",
+                   onClick = function() go(1) end }
+        UI.button{ x = w - 3, y = top, w = 4, h = 1, text = "\16", onClick = function() go(1) end }
+        return top + 2
+    end
+    local btns = {}
+    for _, t in ipairs(list) do
+        btns[#btns + 1] = { text = t[2], h = 1, style = (self.view == t[1]) and "primary" or nil, onClick = function() open(t[1]) end }
+    end
+    return UI.flow(btns, 2, top, Kernel.w - 1) + 1
+end
+
+-- kleine Bildschirme (PC ohne Monitor, Pocket): Steuerkreuz auf eigener Seite
+function Claude.compact() return Kernel.h < 22 end
+
+function Claude:draw()
+    if self.input then return Input.draw(self) end
+    local u = self:unit()
+    if not u then return self:drawSetup() end
+    if self.view == "pad" and not Claude.compact() then self.view = "status" end
+    if self.view == "map" then return self:drawMap(u) end
+    if self.view == "pad" then return self:drawPad(u) end
+    if self.view == "modes" then return self:drawModes(u) end
+    if self.view == "log" then return self:drawLog(u) end
+    return self:drawStatus(u)
+end
+
+function Claude:header(u, sub)
+    local narrow = UI.narrow()
+    local run = u.prog == "claude" and not u.paused
+    local acts = {}
+    if not u.online then
+        acts[1] = { text = "OFFLINE", style = "ghost", fg = colors.red }
+    elseif run then
+        acts[1] = { text = "STOP", style = "danger", confirm = "claude-stop", onClick = function() self:agentCmd("STOP") end }
+    else
+        acts[1] = { text = "START", style = "primary", onClick = function()
+            self:agentCmd("RUN", { name = "claude", resume = true, owner = self:owner() })
+        end }
+    end
+    -- neuer Agent im OS (nur PC): einzeln an Claude (Claude laeuft danach weiter)
+    if not READONLY and u.online and TurtleProgs and TurtleProgs.get and Fleets.UP then
+        local agent = TurtleProgs.get("agent")
+        if agent and u.v and agent.ver and verLess(u.v, agent.ver) then
+            table.insert(acts, 1, { text = "AGENT " .. agent.ver, style = "accent", onClick = function()
+                Fleets.UP:pushCode(u.id, "AGENT", "agent", agent)
+                Kernel.notify("Claude: Agent v" .. agent.ver .. " uebertragen", colors.lime, "claude")
+            end })
+        end
+    end
+    -- neue Programm-Fassung im OS (nur PC): einspielen
+    if not READONLY and u.online and TurtleProgs and TurtleProgs.get then
+        local prog = TurtleProgs.get("claude")
+        if prog and u.hash and prog.hash ~= u.hash and Fleets.UP then
+            table.insert(acts, 1, { text = (UI.bh() == 1) and "UPDATE" or "PROGRAMM-UPDATE", style = "accent", onClick = function()
+                self:agentCmd("STOP")
+                Fleets.UP:pushCode(u.id, "PROG", "claude", prog)
+                self:agentCmd("RUN", { name = "claude", hash = prog.hash, resume = true, owner = self:owner() })
+                u.hash = prog.hash
+                Kernel.notify("Claude: neues Programm uebertragen", colors.lime, "claude")
+            end })
+        end
+    end
+    return UI.header("CLAUDE", sub, acts)
+end
+
+-- Ausruestung, die Claude benutzt (Name im Herzschlag, Anzeige)
+local CL_GEAR = { { "scanner", "Geo Scanner" }, { "player", "Player Detector" }, { "env", "Env. Detector" },
+                  { "chat", "Chat Box" }, { "compass", "Kompass" }, { "speaker", "Speaker" }, { "workbench", "Werkbank" } }
+
+function Claude:drawStatus(u)
+    local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
+    local e = u.ext or {}
+    local run = u.prog == "claude" and not u.paused
+    local mode = run and (CL_MODES[e.m or ""] or tostring(e.m or "?"):upper()) or (u.paused and "ANGEHALTEN" or "PROGRAMM AUS")
+    local compact = Claude.compact()
+    local top = self:header(u, (not narrow and not compact) and ("#" .. u.id .. (u.label and (" " .. u.label) or "") .. (u.v and ("  Agent " .. u.v) or "")) or nil)
+    top = self:tabs(top)
+    local x0 = narrow and 1 or 2
+    local y = top
+    -- Modus, daneben/darunter was Claude gerade tut
+    UI.text(x0, y, "\7 ", run and colors.lime or colors.orange)
+    UI.text(x0 + 2, y, mode, colors.white)
+    local doing = (run and (e.s or "") or (u.status or "")) .. (e.mute and "  (stumm)" or "")
+    if compact and x0 + 4 + #mode + #doing <= w then
+        UI.text(x0 + 4 + #mode, y, doing, colors.lightGray)
+        y = y + 1
+    else
+        y = y + 1
+        UI.text(x0 + 2, y, doing:sub(1, w - x0 - 3), colors.lightGray)
+        y = y + 1
+    end
+    -- Tank
+    local fuel = u.fuel
+    if type(fuel) == "number" then
+        local bw = math.min(narrow and (w - 12) or 30, w - 14)
+        UI.text(x0, y, "TANK", colors.lightGray)
+        UI.bar(x0 + 6, y, bw, fuel / 5000, (fuel < 400) and colors.red or colors.lime)
+        UI.text(x0 + 7 + bw, y, tostring(fuel), (fuel < 400) and colors.red or colors.white)
+        y = y + 1
+    end
+    local where = u.wpos and (u.wpos.x .. " " .. u.wpos.y .. " " .. u.wpos.z) or "?"
+    local info = "BEI " .. where
+    if not narrow and not compact then
+        info = info .. "   KARTE " .. (e.kn or 0) .. " Felder   MONSTER " .. (e.kills or 0)
+        if e.torches then info = info .. "   FACKELN " .. e.torches end
+    end
+    UI.text(x0, y, info:sub(1, w - x0), colors.lightGray)
+    y = y + 1
+    if e.b and e.b.n and e.b.n > 0 then
+        UI.text(x0, y, ("BAU " .. (e.b.k or "") .. " " .. e.b.d .. "/" .. e.b.n):sub(1, w - x0), colors.yellow)
+        y = y + 1
+    end
+    if e.spy == false then UI.text(x0, y, ("Spieler-Positionen aus (Server-Config playerSpy)"):sub(1, w - x0), colors.orange) y = y + 1 end
+    if e.scan and e.scan ~= "" then UI.text(x0, y, ("Scanner: " .. e.scan):sub(1, w - x0), colors.orange) y = y + 1 end
+    -- fehlende Ausruestung (Claude laeuft trotzdem, nur ohne das)
+    if u.tools and run then
+        local miss = {}
+        if not u.sword then miss[1] = "Schwert" end
+        for _, g in ipairs(CL_GEAR) do if not u.tools[g[1]] then miss[#miss + 1] = g[2] end end
+        if #miss > 0 then UI.text(x0, y, ("FEHLT: " .. table.concat(miss, ", ")):sub(1, w - x0), colors.orange) y = y + 1 end
+    end
+    -- Wer ist in der Naehe (antippen = folgen)
+    if #(e.near or {}) > 0 then
+        -- eine Zeile; was nicht passt, steht als "+n" am Ende
+        UI.text(x0, y, "NAH:", colors.lightGray)
+        local x, n = x0 + 5, #e.near
+        for i, p in ipairs(e.near) do
+            local label = p.n .. (p.d and (" " .. p.d) or "")
+            local room = w - ((i < n) and 3 or 0)
+            if x + #label + 1 > room then
+                UI.text(x, y, "+" .. (n - i + 1), colors.lightGray)
+                break
+            end
+            x = UI.button{ x = x, y = y, h = 1, text = label, onClick = function()
+                self:send({ op = "mode", mode = "follow", target = p.n })
+            end } + 1
+        end
+        y = y + 2
+    end
+    -- Befehle
+    local acts = {
+        { text = "KOMM", onClick = function() self:come() end },
+        { text = "FOLGEN", onClick = function() self:send({ op = "mode", mode = "follow", target = self:owner() }) end },
+        { text = "BLEIB", onClick = function() self:send({ op = "mode", mode = "stay" }) end },
+        { text = "FREI", onClick = function() self:send({ op = "mode", mode = "idle" }) end },
+        { text = "HEIM", onClick = function() self:send({ op = "mode", mode = "home" }) end },
+        { text = "WACHE", onClick = function() self:send({ op = "mode", mode = "guard" }) end },
+        { text = "PATROUILLE", onClick = function() self:send({ op = "mode", mode = "patrol" }) end },
+        { text = "SAG", onClick = function()
+            Input.open(self, { title = "Claude sagt:", maxLen = 100, onOk = function(t)
+                if t:find("%S") then self:send({ op = "say", text = t }) end
+            end })
+        end },
+        { text = e.mute and "SPRICH" or "RUHE", onClick = function() self:cmd(e.mute and "sprich" or "ruhe") end },
+    }
+    -- Zuletzt gesagt (nur so viele Zeilen, dass die Befehle darunter noch passen)
+    local gap = compact and 0 or 1
+    local room = h - y - gap - UI.flowHeight(acts, x0, w - 1)
+    if u.sayLog and #u.sayLog > 0 and room >= 1 then
+        -- klein: der letzte Satz auf bis zu 2 Zeilen, gross: die letzten 3 je 1 Zeile
+        local small = narrow or compact
+        local width = w - x0
+        for i = 1, math.min(small and 1 or 3, #u.sayLog, room) do
+            local lines = UI.wrap("\"" .. u.sayLog[i].text .. "\"", width)
+            local n = math.min(small and 2 or 1, room - i + 1)
+            for j = 1, math.min(n, #lines) do
+                local t = lines[j]
+                if j == n and #lines > n then t = t:sub(1, width - 2) .. ".." end
+                UI.text(x0, y, t:sub(1, width), (i == 1) and colors.white or colors.lightGray)
+                y = y + 1
+            end
+        end
+    end
+    y = y + gap
+    if y + UI.flowHeight(acts, x0, w - 1) <= h then
+        y = UI.flow(acts, x0, y, w - 1) + 1
+    end
+    if not compact and y + bh <= h - 1 then self:padRow(x0, y) end
+end
+
+-- Steuerkreuz (nicht abbauen: Claude faehrt nur in freie Felder)
+function Claude:padRow(x0, y)
+    local w, narrow = Kernel.w, UI.narrow()
+    local pad = { { "\24", "vor" }, { "\25", "zurueck" }, { "\27", "links" }, { "\26", "rechts" }, { "HOCH", "hoch" }, { "RUNTER", "runter" } }
+    local list = {}
+    for _, p in ipairs(pad) do
+        list[#list + 1] = { text = p[1], w = (#p[1] == 1) and 3 or nil, onClick = function() self:send({ op = "move", dir = p[2] }) end }
+    end
+    if not narrow then UI.text(x0, y, "STEUERN", colors.lightGray) end
+    return UI.flow(list, narrow and x0 or (x0 + 8), y, w - 1)
+end
+
+function Claude:drawPad(u)
+    local w, narrow = Kernel.w, UI.narrow()
+    local top = self:header(u, nil)
+    top = self:tabs(top)
+    local x0 = narrow and 1 or 2
+    UI.text(x0, top, ("Vor/zurueck/links/rechts aus Claudes Sicht."):sub(1, w - x0), colors.lightGray)
+    local y = self:padRow(x0, top + 2) + 1
+    local more = {
+        { text = "HIERHER", onClick = function() self:come() end },
+        { text = "PARKPLATZ = HIER", onClick = function() self:send({ op = "park", here = true }) end },
+        { text = "CRAFTEN", onClick = function() self:send({ op = "craft", n = 16 }) end },
+    }
+    UI.flow(more, x0, y + 1, w - 1)
+end
+
+-- KOMM: Fernbedienung mit GPS -> dorthin; sonst zum eigenen Spielernamen
+function Claude:come()
+    if REMOTE then
+        local here = Geo.here()
+        if here then return self:send({ op = "goto", x = here.x, y = here.y + 1, z = here.z }) end
+    end
+    if not self:owner() then
+        return Kernel.notify(REMOTE and "Kein GPS: Spielername in MODI > FREI eintragen" or "Besitzer fehlt: INFO > EINSTELLUNGEN", colors.orange)
+    end
+    self:send({ op = "mode", mode = "come", target = self:owner() })
+end
+
+-- ---------- Karte ----------
+local function clRot(up, x, z)
+    if up == 1 then return z, -x elseif up == 2 then return -x, -z elseif up == 3 then return -z, x end
+    return x, z
+end
+local function clUnrot(up, r, d)
+    if up == 1 then return -d, r elseif up == 2 then return -r, -d elseif up == 3 then return d, -r end
+    return r, d
+end
+local CL_ARROWS = { [0] = "\24", [1] = "\26", [2] = "\25", [3] = "\27" }
+local CL_TILE = { [" "] = { " ", "0", "f" }, ["."] = { " ", "0", "c" }, ["#"] = { " ", "0", "8" },
+                  ["~"] = { "\140", "3", "b" }, ["!"] = { "!", "0", "e" } }
+
+function Claude:mapRadius()
+    local w, h = Kernel.w, Kernel.h
+    return math.min(48, math.ceil(math.max(w, h * 1.5) / 2 * self.zoom) + 1)
+end
+
+function Claude:drawMap(u)
+    local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
+    local top = self:header(u, nil)
+    top = self:tabs(top)
+    local m = self.map
+    local legendY = h - 1
+    local mx, my, mw, mh = 1, top, w, legendY - top
+    if not m then
+        UI.empty(top + 2, "Karte wird geladen ...", "Claude schickt, was er schon kennt. Er lernt die Basis mit dem Geo Scanner.")
+        return
+    end
+    local up = tonumber(Settings.get("mapUp")) or 0
+    if up ~= 1 and up ~= 2 and up ~= 3 then up = 0 end
+    local scale = self.zoom
+    local cx, cz = m.cx, m.cz
+    if u.wpos then cx, cz = u.wpos.x, u.wpos.z end
+    local ox, oy = mx + math.floor(mw / 2), my + math.floor(mh / 2)
+    local function world(c, r)
+        local dx, dz = clUnrot(up, (c - ox) * scale, (r - oy) * scale * 1.5)
+        return math.floor(cx + dx + 0.5), math.floor(cz + dz + 0.5)
+    end
+    local function place(x, z)
+        local r, d = clRot(up, x - cx, z - cz)
+        return ox + math.floor(r / scale + 0.5), oy + math.floor(d / (scale * 1.5) + 0.5)
+    end
+    local function tileAt(x, z)
+        local row = m.rows[z - (m.cz - m.r) + 1]
+        if not row then return " " end
+        local ch = row:sub(x - (m.cx - m.r) + 1, x - (m.cx - m.r) + 1)
+        return (ch ~= "") and ch or " "
+    end
+    local s = Kernel.screen
+    for r = my, my + mh - 1 do
+        local chs, fgs, bgs = {}, {}, {}
+        for c = mx, mx + mw - 1 do
+            local x, z = world(c, r)
+            local t = CL_TILE[tileAt(x, z)] or CL_TILE[" "]
+            chs[#chs + 1], fgs[#fgs + 1], bgs[#bgs + 1] = t[1], t[2], t[3]
+        end
+        s.setCursorPos(mx, r)
+        s.blit(table.concat(chs), table.concat(fgs), table.concat(bgs))
+    end
+    local function mark(p, ch, fg, bg)
+        if not p then return end
+        local c, r = place(p.x, p.z)
+        if c >= mx and c < mx + mw and r >= my and r < my + mh then UI.text(c, r, ch, fg, bg or colors.black) return c, r end
+    end
+    for _, zn in ipairs(m.zones or {}) do
+        for _, p in ipairs({ { x = zn.x1, z = zn.z1 }, { x = zn.x2, z = zn.z1 }, { x = zn.x1, z = zn.z2 }, { x = zn.x2, z = zn.z2 } }) do
+            mark(p, "X", colors.orange)
+        end
+    end
+    for i, p in ipairs(m.wps or {}) do mark(p, (i <= 9) and tostring(i) or "+", colors.black, colors.yellow) end
+    mark(m.home, "H", colors.lightBlue)
+    if m.park and not (m.home and m.park.x == m.home.x and m.park.z == m.home.z) then mark(m.park, "P", colors.lightBlue) end
+    mark(m.center or (not REMOTE and Geo.here()) or nil, "\4", colors.white)
+    for _, mob in ipairs((u.ext and u.ext.mobs) or {}) do mark(mob, "x", colors.red) end
+    for _, p in ipairs((u.ext and u.ext.near) or {}) do
+        local c, r = mark(p, "@", colors.yellow)
+        if c and c + #p.n < mx + mw then UI.text(c + 1, r, p.n, colors.yellow) end
+    end
+    if REMOTE then mark(Geo.here(), "\7", colors.white) end
+    if u.wpos then
+        local c, r = mark(u.wpos, u.wf and CL_ARROWS[(u.wf - up) % 4] or "C", colors.black, colors.lime)
+        if c and c + 7 < mx + mw then UI.text(c + 1, r, "Claude", colors.lime) end
+    end
+    UI.text(mx + mw - 3, my, "N" .. CL_ARROWS[(0 - up) % 4], colors.lightGray)
+    -- Antippen: Menue fuer diese Stelle
+    UI.hit(mx, my, mw, mh, function(c, r)
+        local x, z = world(c, r)
+        local y = (u.wpos and u.wpos.y) or 0
+        self.pick = { x = x, y = y, z = z, c = c, r = r }
+    end)
+    -- Legende: unterste Zeile neben den Zoom-Knoepfen nimmt den Rest auf
+    local lx, ly = 1, legendY
+    if not narrow then UI.text(lx, ly, "1 Zeichen = " .. scale .. " Bl.", colors.lightGray) lx = lx + 18 end
+    for _, l in ipairs({ { " Boden ", colors.brown }, { " Wand ", colors.lightGray }, { " Wasser ", colors.blue }, { " Create ", colors.red } }) do
+        if ly == legendY and lx + #l[1] - 1 > w then lx, ly = 1, h end
+        if ly == legendY or lx + #l[1] - 1 <= w - 8 then
+            UI.text(lx, ly, l[1], (l[2] == colors.lightGray) and colors.black or colors.white, l[2])
+            lx = lx + #l[1] + 1
+        end
+    end
+    -- Aktionen unten rechts: Zoom, Punkte, Zonen
+    local zb = { { text = "-", w = 3, h = 1, onClick = function() self:onScroll(1) end },
+                 { text = "+", w = 3, h = 1, onClick = function() self:onScroll(-1) end } }
+    UI.buttonsRight(zb, h, w)
+    if self.pick then self:drawPick(u) end
+end
+
+-- Menue fuer eine angetippte Stelle der Karte
+function Claude:drawPick(u)
+    local p = self.pick
+    local w, h, bh = Kernel.w, Kernel.h, UI.bh()
+    local cw = math.min(w, 30)
+    local items = {
+        { text = "HIERHIN FLIEGEN", fn = function() self:send({ op = "goto", x = p.x, y = p.y, z = p.z }) end },
+        { text = "WEGPUNKT", fn = function() self:send({ op = "wp", action = "add", x = p.x, y = p.y, z = p.z }) self.mapT = -99 end },
+        { text = "PARKPLATZ", fn = function() self:send({ op = "park", x = p.x, y = p.y, z = p.z }) self.mapT = -99 end },
+        { text = self.zoneA and "ZONE: 2. ECKE" or "SPERRZONE: 1. ECKE", fn = function()
+            if self.zoneA then
+                self:send({ op = "zone", action = "add", a = self.zoneA, b = { x = p.x, y = p.y, z = p.z } })
+                self.zoneA, self.mapT = nil, -99
+            else
+                self.zoneA = { x = p.x, y = p.y, z = p.z }
+                Kernel.notify("Jetzt die zweite Ecke der Sperrzone antippen", colors.lightGray)
+            end
+        end },
+    }
+    local ch = #items * bh + 3
+    local x0 = math.max(1, math.min(w - cw + 1, p.c - math.floor(cw / 2)))
+    local y0 = math.max(2, math.min(h - ch, p.r - math.floor(ch / 2)))
+    UI.hit(1, 1, w, Kernel.H, function() self.pick = nil end)
+    UI.card(x0, y0, cw, ch)
+    UI.text(x0 + 1, y0, (p.x .. " " .. p.z):sub(1, cw - 6), colors.lightGray)
+    UI.button{ x = x0 + cw - 4, y = y0, w = 3, h = 1, text = "X", style = "ghost", onClick = function() self.pick = nil end }
+    for i, it in ipairs(items) do
+        UI.button{ x = x0 + 1, y = y0 + 1 + (i - 1) * bh + ((bh == 1) and 1 or 0), w = cw - 2, text = it.text,
+                   onClick = function() self.pick = nil it.fn() end }
+    end
+    UI.surface = colors.black
+end
+
+-- ---------- Modi (Einstellungen von Claude) ----------
+Claude.GROUPS = { "FREI", "PATROUILLE", "WACHE", "KAMPF", "CRAFTEN", "STIMME", "SICHERHEIT" }
+function Claude:setRows(c)
+    local rows = {}
+    local function opts(key, list)
+        local out = {}
+        for _, o in ipairs(list) do
+            out[#out + 1] = { text = o[1], style = (c[key] == o[2]) and "primary" or nil, onClick = function()
+                c[key] = o[2]
+                self:send({ op = "set", key = key, value = o[2] })
+            end }
+        end
+        return out
+    end
+    local function onoff(key) return opts(key, { { "AN", true }, { "AUS", false } }) end
+    local function row(g, label, value, buttons, color) rows[#rows + 1] = { label, value, color, buttons, g = g } end
+    local u = self:unit()
+    local e = (u and u.ext) or {}
+    row("FREI", "Wenn frei", ({ park = "parken", hover = "schweben und die Basis lernen", guard = "Wache am Parkplatz" })[c.idle] or "?",
+        opts("idle", { { "PARKEN", "park" }, { "SCHWEBEN", "hover" }, { "WACHE", "guard" } }))
+    row("FREI", "Schweb-Radius", tostring(c.hoverR) .. " Bloecke", opts("hoverR", { { "8", 8 }, { "12", 12 }, { "20", 20 }, { "32", 32 } }))
+    row("FREI", "Nachts", c.nightHome and "zum Parkplatz" or "wie am Tag", onoff("nightHome"))
+    row("FREI", "Parkplatz", c.park and "eigener (Karte)" or "Basis (Spind)", {
+        { text = "BASIS", onClick = function() c.park = false self:send({ op = "set", key = "park", value = false }) end },
+        { text = "HIER", onClick = function() self:send({ op = "park", here = true }) self.cfgT = -99 end } })
+    row("PATROUILLE", "Wegpunkte", tostring(e.wp or 0) .. " (Karte antippen oder $claude punkt)", {
+        { text = "LOESCHEN", style = "danger", confirm = "cl-wp", onClick = function() self:send({ op = "wp", action = "clear" }) self.mapT = -99 end } })
+    row("PATROUILLE", "Pause je Punkt", tostring(c.patrolWait) .. " s", opts("patrolWait", { { "0", 0 }, { "5", 5 }, { "15", 15 }, { "30", 30 } }))
+    row("PATROUILLE", "Starten", "", { { text = "PATROUILLE", style = "primary", onClick = function() self:send({ op = "mode", mode = "patrol" }) end } })
+    row("WACHE", "Radius", tostring(c.guardR) .. " Bloecke um die Wache", opts("guardR", { { "6", 6 }, { "10", 10 }, { "16", 16 } }))
+    row("WACHE", "Wache hier", "", { { text = "WACHE", style = "primary", onClick = function() self:send({ op = "mode", mode = "guard" }) end } })
+    row("KAMPF", "Monster angreifen", c.mobs and "ja (Diamantschwert)" or "nein", onoff("mobs"))
+    row("KAMPF", "Creeper", c.creepers and "auch" or "in Ruhe lassen", onoff("creepers"))
+    row("KAMPF", "Folge-Abstand", tostring(c.followDist) .. " Bloecke", opts("followDist", { { "2", 2 }, { "3", 3 }, { "5", 5 } }))
+    row("CRAFTEN", "Fackeln setzen", c.torches and "selbst, wenn es dunkel ist" or "nur anbieten", onoff("torches"))
+    row("CRAFTEN", "Fackel-Vorrat", tostring(c.torchStock) .. (e.torches and ("  (hat " .. e.torches .. ")") or ""),
+        opts("torchStock", { { "0", 0 }, { "16", 16 }, { "32", 32 }, { "64", 64 } }))
+    row("CRAFTEN", "Selbst craften", c.autoCraft and "ja, im Leerlauf am Spind" or "nur auf Befehl", onoff("autoCraft"))
+    row("CRAFTEN", "Spind", ({ down = "Kiste unter der Basis", up = "Kiste ueber der Basis", back = "Kiste hinter der Basis" })[c.locker] or "?",
+        opts("locker", { { "UNTEN", "down" }, { "OBEN", "up" }, { "HINTEN", "back" } }))
+    row("CRAFTEN", "Jetzt", "16 Fackeln aus Kohle + Stoecken/Brettern", { { text = "CRAFTEN", style = "primary", onClick = function() self:send({ op = "craft", n = 16 }) end } })
+    row("STIMME", "Gespraechig", ({ [0] = "still", "wenig", "normal", "viel" })[c.talk] or "?",
+        opts("talk", { { "STILL", 0 }, { "WENIG", 1 }, { "NORMAL", 2 }, { "VIEL", 3 } }))
+    row("STIMME", "Begruessen", c.greet and "ja" or "nein", onoff("greet"))
+    row("STIMME", "Stups", c.poke and ("selten: " .. table.concat(c.pokeTargets or {}, ", ")) or "aus", onoff("poke"))
+    row("STIMME", "Stups-Chance", "1 von " .. tostring(c.pokeOdds) .. " Begegnungen (hoechstens 1x am Tag)",
+        opts("pokeOdds", { { "1/20", 20 }, { "1/50", 50 }, { "1/150", 150 } }))
+    row("SICHERHEIT", "Leine", tostring(c.leash) .. " Bloecke um " .. (c.center and "den PC" or "die Basis"),
+        opts("leash", { { "32", 32 }, { "64", 64 }, { "100", 100 } }))
+    if not REMOTE then
+        local here = Geo.here()
+        row("SICHERHEIT", "Mitte der Leine", c.center and "PC" or "Basis von Claude", {
+            { text = "PC", disabled = not here, onClick = function() self:send({ op = "center", x = here.x, y = here.y, z = here.z }) self.cfgT = -99 end },
+            { text = "BASIS", onClick = function() self:send({ op = "set", key = "center", value = false }) end } })
+    end
+    row("SICHERHEIT", "Create-Abstand", tostring(c.createGap) .. " Bloecke (Werkstationen erlaubt)", opts("createGap", { { "2", 2 }, { "3", 3 }, { "4", 4 } }))
+    row("SICHERHEIT", "Sperrzonen", tostring(e.zn or 0) .. " (KARTE antippen)", {
+        { text = "LOESCHEN", style = "danger", confirm = "cl-zn", onClick = function() self:send({ op = "zone", action = "clear" }) self.mapT = -99 end } })
+    row("SICHERHEIT", "Karte", tostring(e.kn or 0) .. " bekannte Felder", {
+        { text = "VERGESSEN", style = "danger", confirm = "cl-forget", onClick = function() self:send({ op = "forget" }) self.mapT = -99 end } })
+    if REMOTE then
+        row("FREI", "Dein Spielername", self:owner() or "fehlt (fuer KOMM ohne GPS und FOLGEN)", {
+            { text = "AENDERN", onClick = function()
+                Input.open(self, { title = "Dein Spielername:", text = self:owner() or "", maxLen = 16, filter = "[^%w_]", onOk = function(t)
+                    Settings.set("owner", t)
+                end })
+            end } }, self:owner() and colors.lightGray or colors.orange)
+    end
+    return rows
+end
+
+function Claude:drawModes(u)
+    local w, narrow = Kernel.w, UI.narrow()
+    local top = self:header(u, nil)
+    top = self:tabs(top)
+    local c = self.cfg
+    if not c then UI.empty(top + 2, "Einstellungen werden geladen ...", "Claude muss eingeschaltet und in Funkreichweite sein.") return end
+    -- Gruppen
+    local need = -1
+    for _, g in ipairs(Claude.GROUPS) do need = need + #g + 3 end
+    if need <= w - 2 then
+        local list = {}
+        for _, g in ipairs(Claude.GROUPS) do
+            list[#list + 1] = { text = g, h = 1, style = (g == self.group) and "primary" or nil, onClick = function() self.group, self.modePage.page = g, 1 end }
+        end
+        top = UI.flow(list, narrow and 1 or 2, top, w - 1) + 1
+    else
+        UI.button{ x = 1, y = top, w = w, h = 1, text = self.group .. " \16", onClick = function()
+            for i, g in ipairs(Claude.GROUPS) do
+                if g == self.group then self.group = Claude.GROUPS[i % #Claude.GROUPS + 1] break end
+            end
+            self.modePage.page = 1
+        end }
+        top = top + 2
+    end
+    local rows = {}
+    for _, r in ipairs(self:setRows(c)) do if r.g == self.group then rows[#rows + 1] = r end end
+    UI.settingsList(self.modePage, rows, top)
+end
+
+-- ---------- Log: Besucher und Ereignisse ----------
+function Claude:drawLog(u)
+    local w, narrow = Kernel.w, UI.narrow()
+    local top = self:header(u, nil)
+    top = self:tabs(top)
+    local log = self.log
+    if not log then UI.empty(top + 2, "Log wird geladen ...") return end
+    local items = {}
+    for i = #log.visits, 1, -1 do
+        local v = log.visits[i]
+        local dur = v.d and (math.max(1, math.floor((v.d - v.a) / 60)) .. " min") or "noch da"
+        items[#items + 1] = { t = v.a, text = v.n .. "  (" .. dur .. ")", color = v.d and colors.white or colors.lime, kind = "BESUCH" }
+    end
+    for i = #log.list, 1, -1 do
+        local e = log.list[i]
+        if e.k ~= "sagt" or self.showSaid then
+            items[#items + 1] = { t = e.t, text = e.text, color = (e.k == "kampf") and colors.red or ((e.k == "sagt") and colors.lightGray or colors.white), kind = e.k:upper() }
+        end
+    end
+    table.sort(items, function(a, b) return a.t > b.t end)
+    local bw = narrow and 7 or 10
+    local head = narrow and ("SPIELER " .. #log.people .. "  MOBS " .. log.kills) or ("SPIELER " .. #log.people .. "  MONSTER " .. log.kills)
+    UI.text(narrow and 1 or 2, top, head:sub(1, w - bw - 2), colors.lightGray)
+    UI.button{ x = w - bw, y = top, w = bw, h = 1, text = narrow and (self.showSaid and "-SAGT" or "+SAGT") or (self.showSaid and "OHNE SAGT" or "MIT SAGT"),
+               style = "ghost", onClick = function() self.showSaid = not self.showSaid end }
+    UI.list(self.logPage, items, top + 2, 1, function(it, y)
+        local x0 = narrow and 1 or 2
+        local when = clAgo(it.t)
+        UI.text(x0, y, when, colors.lightGray)
+        local tx = x0 + 7
+        if not narrow then UI.text(tx, y, it.kind:sub(1, 7), colors.orange) tx = tx + 8 end
+        UI.text(tx, y, it.text:sub(1, w - tx), it.color)
+    end)
+end
+
+-- ---------- Einrichten: noch kein Claude ----------
+function Claude:drawSetup()
+    local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
+    local top = UI.header("CLAUDE", not narrow and "Begleit-Droide" or nil)
+    if REMOTE or READONLY then
+        UI.empty(top + 2, "Kein Claude in Reichweite",
+                 "Claude wird am PC eingerichtet (CLAUDE > Turtle waehlen). Danach meldet er sich hier von selbst.")
+        return
+    end
+    local sw = Fleets and Fleets.UP
+    local list = {}
+    if sw then
+        for id, e in pairs(sw.store) do if e.online then list[#list + 1] = { id = id, e = e } end end
+        table.sort(list, function(a, b) return a.id < b.id end)
+    end
+    local y = top
+    local intro = UI.wrap("Eine Turtle wird zu Claude: Agent 5.4, Ender Modem, Diamantschwert. Im Inventar Chat Box, Player Detector, " ..
+                          "Environment Detector, Geo Scanner, Kompass, Speaker, Chunky, Werkbank und Kohle. Spind: Kiste unter der Basis.", w - 4)
+    for _, l in ipairs(intro) do
+        if y < h - 6 then UI.text(2, y, l, colors.lightGray) y = y + 1 end
+    end
+    y = y + 1
+    if #list == 0 then
+        UI.text(2, y, "Keine Turtle online (Basis mit GPS setzen, TURTLE-DISK).", colors.orange)
+        return
+    end
+    UI.list(self.setupPage, list, y, bh + 1, function(it, ry)
+        local tx, xr = UI.rowCard(ry, bh)
+        local e = it.e
+        local old = verLess(e.v, "5.4")
+        local need = {}
+        for _, t in ipairs({ "chat", "player", "env", "scanner" }) do if not (e.toolSet and e.toolSet[t]) then need[#need + 1] = t end end
+        local bx = UI.buttonsRight({ { text = narrow and "CLAUDE" or "ZU CLAUDE MACHEN", style = "primary", confirm = "cl-make-" .. it.id,
+            onClick = function()
+                local text, failed = sw:runProgram(it.id, "claude", { owner = self:owner() }, true)
+                Kernel.notify("#" .. it.id .. ": " .. tostring(text), failed and colors.red or colors.lime)
+            end } }, ry, xr)
+        local name = "#" .. it.id .. " " .. (sw:nameOf(it.id, e) or "")
+        UI.text(tx, ry, name:sub(1, bx - tx - 1), colors.white)
+        if not narrow then
+            local hint = old and "Agent zu alt: erst SCHWARM > UPDATE" or ((#need > 0) and ("fehlt: " .. table.concat(need, ", ")) or ("Agent " .. tostring(e.v)))
+            UI.text(tx + 14, ry, hint:sub(1, math.max(0, bx - tx - 16)), (old or #need > 0) and colors.orange or colors.lightGray)
+        end
+    end)
+end
+
+Apps.register(Claude)
+Kernel.claude = Claude
 
 -- ======================================================================
 -- [8] DATEN
@@ -9026,6 +9859,11 @@ Sys.HELP = {
     luaapps = { "Deine Programme in /scripts, mit Ordnern.",
                 "START fuehrt aus, EDIT oeffnet den Editor, DEL legt in den Papierkorb.",
                 "Ordner turtle: Programme fuer die Turtles (Start in SCHWARM)." },
+    claude = { "Claude ist der Begleit-Droide der Basis: eine Turtle mit Schwert und allen Werkzeugen.",
+               "Im Spiel: $claude komm, folge, bleib, heim, frei, wache, patrouille, hilfe ($ = unsichtbar).",
+               "STATUS: Befehle und Steuerkreuz. KARTE: was Claude kennt; antippen = hinfliegen, Wegpunkt, Sperrzone.",
+               "MODI: wie Claude sich verhaelt (frei, Patrouille, Wache, Kampf, Crafting, Stimme, Sicherheit).",
+               "Er baut nie etwas ab, bleibt ueber Wasser, 100 Bloecke beim PC und weg von Create-Maschinen." },
     info  = { "Geraet, Funk, Speicher und Erweiterungen auf einen Blick.",
               "EINSTELLUNGEN: Passwoerter, Design, Lager, Schwarm.",
               "SYSTEM: Check, Update, Backup, Papierkorb, Einrichtung und sicherer Modus.",
@@ -9764,6 +10602,15 @@ function Info:setPassword(text)
                 e.keyOld = true
             end
         end
+        -- Claude (eigene App, nicht im Schwarm) bekommt den Schluessel genauso
+        for id, u in pairs(Kernel.claude and Kernel.claude.units or {}) do
+            if u.online and viaAir then
+                Net.send(id, { t = "KEY", key = Net.toHex(key), default = isDefault, since = since })
+                sent = sent + 1
+            else
+                waiting = waiting + 1
+            end
+        end
     end
     Net.setKey(key, isDefault, since)
     Net.save(CONFIG.keyFile)
@@ -9961,15 +10808,21 @@ function Info:drawSettings()
     top = top + 2
     local rows = {}
     for _, r in ipairs(all) do if r.g == self.setGroup then rows[#rows + 1] = r end end
-    -- schmal (Handy, Pocket): Name, Wert und Knoepfe je in einer eigenen Zeile;
-    -- PC ohne Monitor: Name + Knoepfe, darunter der Wert; Touch-Monitor: eine Zeile.
+    UI.settingsList(self.setPage, rows, top)
+end
+
+-- Einstellungs-Liste: rows = { { Name, Wert, Farbe, { Knoepfe } }, ... }
+-- schmal (Handy, Pocket): Name, Wert und Knoepfe je in einer eigenen Zeile;
+-- PC ohne Monitor: Name + Knoepfe, darunter der Wert; Touch-Monitor: eine Zeile.
+function UI.settingsList(state, rows, top)
+    local bh, narrow = UI.bh(), UI.narrow()
     local mode = narrow and "stack" or ((bh == 1) and "two" or "one")
     local ch = (mode == "stack") and 3 or ((mode == "two") and 2 or bh)
-    UI.list(self.setPage, rows, top, ch + 1, function(r, y)
+    UI.list(state, rows, top, ch + 1, function(r, y)
         local tx, xr = UI.rowCard(y, ch)
         if mode ~= "one" then
             local by = (mode == "stack") and (y + 2) or y
-            local bx = (#r[4] > 0) and UI.buttonsRight(r[4], by, xr) or (xr + 2)
+            local bx = (#r[4] > 0) and UI.buttonsRight(r[4], by, xr, (mode == "stack") and (tx - 1) or nil) or (xr + 2)
             UI.text(tx, y, r[1]:sub(1, ((mode == "stack") and xr or (bx - 2)) - tx + 1), colors.white)
             UI.text(tx, y + 1, tostring(r[2]):sub(1, xr - tx + 1), r[3] or colors.lightGray)
             return
@@ -10656,6 +11509,9 @@ local function netRoutine()
         if proto == Net.proto and type(id) == "number" then
             local payload, from = Net.open(msg)
             local fleet = payload and Fleets[payload.t]
+            if payload and Kernel.claude and (payload.t == "CLD" or (payload.t == "UP" and payload.role == "claude")) then
+                fleet = Kernel.claude
+            end
             if fleet and from == id then
                 local ok, changed = pcall(fleet.receive, fleet, id, payload)
                 if ok and changed and (Kernel.app == fleet or Kernel.app.id == "home") then
@@ -10772,7 +11628,8 @@ local function main()
     end
     if PHONE then
         -- Handy fuer Freunde: Lager, Notizen, Rechner, Nether, Web, Games, Info - keine Turtles.
-        for _, id in ipairs({ "swarm", "pcraft", "data", "shell", "luaapps" }) do
+        Kernel.claude = nil
+        for _, id in ipairs({ "swarm", "pcraft", "data", "shell", "luaapps", "claude" }) do
             local app = Apps.byId[id]
             if app then
                 Apps.byId[id] = nil
@@ -10785,9 +11642,23 @@ local function main()
             Net.setKey(Net.derive(CONFIG.phonePassword), true)
         end
         UI.layoutCache = nil
+    elseif EDITION == "claude" then
+        -- Claude-Fernbedienung: nur Claude (als Startseite) und INFO.
+        for _, app in ipairs({ table.unpack(Apps.list) }) do
+            if app.id ~= "boot" and app.id ~= "claude" and app.id ~= "info" then
+                Apps.byId[app.id] = nil
+                for i, a in ipairs(Apps.list) do if a == app then table.remove(Apps.list, i) break end end
+            end
+        end
+        local cl = Apps.byId.claude
+        cl.tab = false
+        Apps.byId.home = cl
+        for k in pairs(Fleets) do Fleets[k] = nil end
+        UI.layoutCache = nil
     elseif READONLY then
         -- Pocket = Fortschritts-Tablet: nur Anzeigen, keine Werkzeuge.
-        for _, id in ipairs({ "pcraft", "data", "web", "shell", "luaapps", "notes", "editor", "games" }) do
+        Kernel.claude = nil
+        for _, id in ipairs({ "pcraft", "data", "web", "shell", "luaapps", "notes", "editor", "games", "claude" }) do
             local app = Apps.byId[id]
             if app then
                 Apps.byId[id] = nil

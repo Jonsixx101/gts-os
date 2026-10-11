@@ -43,7 +43,8 @@ if turtle then
 elseif pocket then
     say("1 = GTS Pocket (Schwarm-Tablet)")
     say("2 = GTS Phone (fuer Freunde: Lager, Notizen ...)")
-    edition = ask("Welche?", { ["1"] = "pocket", ["2"] = "phone" })
+    say("3 = Claude-Fernbedienung")
+    edition = ask("Welche?", { ["1"] = "pocket", ["2"] = "phone", ["3"] = "claude" })
 else
     edition = "pc"
 end

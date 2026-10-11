@@ -1,6 +1,6 @@
 -- ======================================================================
--- GTS SCHWARM-AGENT v5.1 - Turtle-Client       (CC: Tweaked, MC 1.21.1)
--- Gegenstueck zu GTS OS v7.1 - als startup.lua auf jede Turtle.
+-- GTS SCHWARM-AGENT v5.4 - Turtle-Client       (CC: Tweaked, MC 1.21.1)
+-- Gegenstueck zu GTS OS 1.2 - als startup.lua auf jede Turtle (auch Claude).
 -- ======================================================================
 -- Der Agent bleibt dauerhaft auf der Turtle. Er
 --   - funkt verschluesselt mit dem OS (Schwarm-Passwort wie am OS),
@@ -25,7 +25,7 @@
 --   [6] Welt und Funde     [12] Bildschirm und Start
 -- ======================================================================
 
-local VERSION = "5.3"
+local VERSION = "5.4"
 
 -- ======================================================================
 -- [1] KONFIGURATION
@@ -79,7 +79,8 @@ local FUEL = {
 
 -- Bleibt immer an Bord (wird weder weggeworfen noch entladen).
 local KEEP_PARTS = { "geo_scanner", "modem", "pickaxe", "chunk_controller", "minecraft:compass",
-                     "environment_detector", "player_detector", "chat_box", "computercraft:speaker" }
+                     "environment_detector", "player_detector", "chat_box", "computercraft:speaker",
+                     "_sword", "minecraft:crafting_table" }
 
 -- Diese Bloecke baut die Turtle nie ab: andere Turtles, Computer, Lager,
 -- Lootr-Kisten und Suspicious Clay/Gravel (Abbauen zerstoert den Inhalt).
@@ -1015,8 +1016,9 @@ local TOOLS = {
     player  = { ptype = "player_detector",      label = "Spieler",  items = { "advancedperipherals:player_detector" } },
     chat    = { ptype = "chat_box",             label = "Chat",     items = { "advancedperipherals:chat_box" } },
     speaker = { ptype = "speaker",              label = "Ton",      items = { "computercraft:speaker" } },
+    workbench = { ptype = "workbench",          label = "Werkbank", items = { "minecraft:crafting_table" } },
 }
-local TOOL_ORDER = { "chunky", "modem", "scanner", "compass", "env", "player", "chat", "speaker" }
+local TOOL_ORDER = { "chunky", "modem", "scanner", "compass", "env", "player", "chat", "speaker", "workbench" }
 
 -- Welches Werkzeug steckt an dieser Seite? (Ein Wired Modem zaehlt nicht,
 -- eine Spitzhacke ist kein Peripheriegeraet: nil.)
@@ -1045,6 +1047,12 @@ end
 local function isDigItem(name)
     return type(name) == "string" and name:find("pickaxe", 1, true) ~= nil
 end
+-- Arbeitswerkzeug an der Arbeitsseite: Spitzhacke, sonst ein Schwert (v5.4,
+-- z.B. Claude: kaempft, baut aber nie ab).
+local function isSwordItem(name)
+    return type(name) == "string" and name:find("_sword", 1, true) ~= nil
+end
+local function isWorkItem(name) return isDigItem(name) or isSwordItem(name) end
 
 local function findToolSlot(kind)
     for slot = 1, 16 do
@@ -1065,10 +1073,13 @@ local tool = {
 }
 
 local function findDigSlot()
+    local sword
     for slot = 1, 16 do
         local it = turtle.getItemDetail(slot)
         if it and (it.name == tool.digItem or isDigItem(it.name)) then return slot end
+        if it and isSwordItem(it.name) and not sword then sword = slot end
     end
+    return sword
 end
 
 local function emptySlot()
@@ -1165,7 +1176,7 @@ local function equipWork(kind)
     if not equipFrom(side, slot) then return false end
     local it = turtle.getItemDetail(slot)
     tool.lastSlot, tool.displaced, tool.workKind = slot, it and it.name or false, kind
-    if it and isDigItem(it.name) then tool.digItem = it.name end
+    if it and isWorkItem(it.name) then tool.digItem = it.name end
     local ok = waitSide(side, kind)
     if ok and kind == "modem" then openRadio(side) end
     return ok
@@ -1181,7 +1192,7 @@ local function restoreDig()
     local tries, seenSlot = {}, {}
     local function add(slot) if slot and not seenSlot[slot] then seenSlot[slot] = true tries[#tries + 1] = slot end end
     local last = tool.lastSlot and turtle.getItemDetail(tool.lastSlot)
-    if last and (last.name == tool.digItem or isDigItem(last.name)) then add(tool.lastSlot) end
+    if last and (last.name == tool.digItem or isWorkItem(last.name)) then add(tool.lastSlot) end
     for slot = 1, 16 do
         local it = turtle.getItemDetail(slot)
         if it and tool.digItem and it.name == tool.digItem then add(slot) end
@@ -1189,6 +1200,10 @@ local function restoreDig()
     for slot = 1, 16 do
         local it = turtle.getItemDetail(slot)
         if it and isDigItem(it.name) then add(slot) end
+    end
+    for slot = 1, 16 do
+        local it = turtle.getItemDetail(slot)
+        if it and isSwordItem(it.name) then add(slot) end
     end
     -- keine (passende) Spitzhacke: den Tausch rueckgaengig machen, sonst abnehmen
     if tool.lastSlot and ((last and last.name) or false) == tool.displaced then add(tool.lastSlot) end
@@ -1198,7 +1213,7 @@ local function restoreDig()
         local expect = it and toolOfItem(it.name) or nil
         if equipFrom(side, slot) then
             tool.workKind = nil
-            if it and isDigItem(it.name) then tool.digItem = it.name end
+            if it and isWorkItem(it.name) then tool.digItem = it.name end
             return waitSide(side, expect)
         end
     end
@@ -1212,8 +1227,12 @@ local function refreshTools()
         local k = toolAtSide(side)
         if k then have[k] = true end
         local name, known = equippedName(side)
-        if isDigItem(name) then have.pick = true tool.digItem = name end
-        if side == tool.work and not k and not known then have.pick = true end   -- vermutlich die Spitzhacke
+        if isDigItem(name) then have.pick = true end
+        if isSwordItem(name) then have.sword = true end
+        if isWorkItem(name) then tool.digItem = name end
+        if side == tool.work and not k and not known then
+            if isSwordItem(tool.digItem) then have.sword = true else have.pick = true end   -- vermutlich das Arbeitswerkzeug
+        end
     end
     for slot = 1, 16 do
         local it = turtle.getItemDetail(slot)
@@ -1221,6 +1240,7 @@ local function refreshTools()
             local k = toolOfItem(it.name)
             if k then have[k] = true end
             if isDigItem(it.name) then have.pick = true end
+            if isSwordItem(it.name) then have.sword = true end
         end
     end
     tool.have = have
@@ -1246,7 +1266,7 @@ local function setupTools()
             equipFrom(target, slot)
             -- dabei die Spitzhacke erwischt? Dann kommt sie an die andere Seite.
             local it = turtle.getItemDetail(slot)
-            if it and isDigItem(it.name) then
+            if it and isWorkItem(it.name) then
                 tool.digItem = it.name
                 equipFrom(otherSide(target), slot)
             end
@@ -1257,7 +1277,7 @@ local function setupTools()
     if not tool.radio then return false end
     tool.work = otherSide(tool.radio)
     local name = equippedName(tool.work)
-    if isDigItem(name) then tool.digItem = name end
+    if isWorkItem(name) then tool.digItem = name end
     local kind = toolAtSide(tool.work)
     local slot = findDigSlot()
     -- Spitzhacke aus dem Inventar an die Arbeitsseite: wenn dort ein
@@ -1268,7 +1288,7 @@ local function setupTools()
     if slot and kind then
         tool.workKind = kind
         restoreDig()
-    elseif slot and not (known and isDigItem(name)) then
+    elseif slot and not (known and isWorkItem(name)) then
         -- (ohne getEquipped: einfach anlegen - steckte schon eine dran, liegt sie danach im Inventar)
         local it = turtle.getItemDetail(slot)
         if equipFrom(tool.work, slot) and it then tool.digItem = it.name end
@@ -2124,6 +2144,32 @@ local T = {
     fuel = function() return turtle.getFuelLevel(), turtle.getFuelLimit() end,
     use = withTool, facing = compassFacing, tell = tell,
 }
+-- ---------- Programm-Postfach (v5.4) ----------
+-- Das OS (oder eine Fernbedienung) schickt einem laufenden Programm Nachrichten
+-- mit CMD "PMSG": sie landen sofort hier (nicht in der Warteschlange) und das
+-- Ereignis "gts_pmsg" wird ausgeloest. T.reply antwortet dem Absender (t = "CLD").
+-- T.publish(t) haengt eine kleine Tabelle an jeden Herzschlag (Feld ext).
+T.inbox = {}
+local programExt = nil
+function T.reply(to, msg)
+    if type(to) ~= "number" or type(msg) ~= "table" then return false end
+    msg.t = "CLD"
+    if not radioSide() then return false end
+    return pcall(Net.send, to, msg)
+end
+function T.publish(ext) programExt = ext end
+-- Rolle der Turtle (z.B. "claude"): steht in jedem Herzschlag, das OS zeigt sie
+-- dann nicht im Schwarm, sondern in einer eigenen App.
+function T.setRole(role)
+    data.role = role
+    saveData()
+end
+function T.role() return data.role end
+T.worldToRel = worldToRel
+function T.posOk() return posOk end
+function T.osId() return osId end
+function T.radio() return radioSide() end
+
 -- Welche Werkzeuge hat die Turtle? { scanner = true, compass = true, ... }
 function T.tools()
     local out = {}
@@ -2178,6 +2224,7 @@ function Progs.run(name, args, resume)
     T.state, T.args, T.resume = p.state, p.args, resume and true or false
     saveData()
     local ok, res, msg, mode = pcall(fn, T, p.args)
+    programExt = nil
     if not ok then
         if res == "STOP" then error("STOP", 0) end
         data.program, data.fence = nil, nil
@@ -2383,6 +2430,7 @@ local FN = {
         refreshTools()
         local list = {}
         if tool.have.pick then list[1] = "Hacke" end
+        if tool.have.sword then list[#list + 1] = "Schwert" end
         for _, k in ipairs(TOOL_ORDER) do
             if tool.have[k] and k ~= "modem" then list[#list + 1] = TOOLS[k].label end
         end
@@ -2467,7 +2515,8 @@ local function payload()
         -- Welt-Koordinaten (wenn bekannt): Turtle, Blick (0 = Nord) und Basis
         wpos = wpos, wf = data.compass and (data.compass + pos.f) % 4 or nil,
         base = data.world and { x = data.world.x, y = data.world.y, z = data.world.z } or nil,
-        gpsOk = gpsState.ok, pick = tool.have.pick == true,
+        gpsOk = gpsState.ok, pick = tool.have.pick == true, sword = tool.have.sword == true,
+        role = data.role, ext = programExt,
         gpsAge = gpsLast.t and math.floor(os.clock() - gpsLast.t) or nil, gpsFix = gpsLast.fix,
     }
 end
@@ -2515,7 +2564,10 @@ local function handle(msg, from)
                 logEvent("Programm " .. msg.name .. " erhalten")
             end
         elseif code then
-            -- Neuer Agent: als startup schreiben, danach neu starten.
+            -- Neuer Agent: als startup schreiben, danach neu starten. Ein Dauer-
+            -- Programm mit Rolle (Claude) wird dafuer kurz angehalten und laeuft
+            -- nach dem Neustart weiter (es bleibt "nicht pausiert").
+            if busy and data.program and data.role and current == "RUN" then abort = true end
             local self = (shell and shell.getRunningProgram and shell.getRunningProgram()) or "startup.lua"
             local h = fs.open("/" .. self .. ".neu", "w")
             if h then
@@ -2543,13 +2595,23 @@ local function handle(msg, from)
     if msg.t ~= "CMD" or type(msg.cmd) ~= "string" then return end
     osId = from
     -- Das OS wiederholt Befehle ohne Antwort; doppelte nur beantworten.
+    -- (je Absender: PC und Fernbedienung zaehlen unabhaengig voneinander)
     if type(msg.seq) == "number" then
-        if handled[msg.seq] then push() return end
-        handled[msg.seq] = true
-        handledList[#handledList + 1] = msg.seq
+        local key = tostring(from) .. ":" .. msg.seq
+        if handled[key] then push() return end
+        handled[key] = true
+        handledList[#handledList + 1] = key
         if #handledList > 32 then handled[table.remove(handledList, 1)] = nil end
     end
-    if msg.cmd == "ACK" then
+    if msg.cmd == "PMSG" then
+        -- Nachricht an das laufende Programm (v5.4): sofort, ohne Warteschlange
+        if type(msg.args) == "table" then
+            if #T.inbox >= 32 then table.remove(T.inbox, 1) end
+            T.inbox[#T.inbox + 1] = { from = from, args = msg.args }
+            os.queueEvent("gts_pmsg")
+        end
+        return
+    elseif msg.cmd == "ACK" then
         -- Das OS hat Funde bis Nummer n gespeichert.
         local n = tonumber(msg.n) or 0
         while data.finds[1] and data.finds[1].n <= n do table.remove(data.finds, 1) end
@@ -2629,7 +2691,7 @@ local function workLoop()
             logEvent(note)
             push()
             -- Ergebnis eines Programms per Chat Box direkt an den Besitzer
-            if job.cmd == "RUN" and tool.have.chat and data.owner then
+            if job.cmd == "RUN" and tool.have.chat and data.owner and not data.role then
                 pcall(tell, "#" .. os.getComputerID() .. " " .. (os.getComputerLabel() or "") .. ": " .. note)
             end
         end
@@ -2712,7 +2774,7 @@ local function draw(actions)
     term.clear()
     -- Kopf
     band(1, colors.gray) band(2, colors.gray)
-    put(2, 1, "GTS SCHWARM", colors.white, colors.gray)
+    put(2, 1, (data.role == "claude") and "CLAUDE" or "GTS SCHWARM", colors.white, colors.gray)
     local who = "#" .. os.getComputerID() .. (os.getComputerLabel() and (" " .. os.getComputerLabel()) or "")
     who = who:sub(1, w - 16)
     put(w - #who, 1, who, colors.lightGray, colors.gray)
@@ -2761,9 +2823,11 @@ local function draw(actions)
     for _, k in ipairs(TOOL_ORDER) do
         if tool.have[k] and k ~= "modem" then tl[#tl + 1] = TOOLS[k].label end
     end
-    if #tl > 0 or not tool.have.pick then
-        row(y, "WERKZEUG", tool.have.pick and table.concat(tl, " ") or ("KEINE HACKE! " .. table.concat(tl, " ")),
-            tool.have.pick and colors.white or colors.red)
+    local armed = tool.have.pick or (data.role and tool.have.sword)
+    if tool.have.sword then table.insert(tl, 1, "Schwert") end
+    if #tl > 0 or not armed then
+        row(y, "WERKZEUG", armed and table.concat(tl, " ") or ("KEINE HACKE! " .. table.concat(tl, " ")),
+            armed and colors.white or colors.red)
         y = y + 1
     end
     local progs = {}

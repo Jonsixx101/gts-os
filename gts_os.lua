@@ -1,10 +1,11 @@
 -- ======================================================================
--- GTS OS 1.1.0 - Kernel, UI und Apps            (CC: Tweaked, MC 1.21.1)
+-- GTS OS 1.2.0 - Kernel, UI und Apps            (CC: Tweaked, MC 1.21.1)
 -- by Jonsi
 -- ======================================================================
 -- Laeuft auf dem Advanced Computer, am liebsten mit Advanced Monitor
 -- (5x2 Bloecke = 100x24 Zeichen, Touch). Fuer den Advanced Pocket
--- Computer gibt es eine eigene Fassung (gts_pocket.lua, Fortschritts-Tablet).
+-- Computer gibt es eigene Fassungen: gts_pocket.lua (Fortschritts-Tablet),
+-- gts_phone.lua (Handy fuer Freunde) und gts_claude.lua (Claude-Fernbedienung).
 --
 -- Aufbau (angelehnt an den Opus-Kernel):
 --   [1] Konfiguration, Farbschema, Verschluesselung, Einstellungen
@@ -14,6 +15,7 @@
 --   [5] Home / Boot
 --   [6] Notizen + Editor + Bildschirmtastatur + Drucken
 --   [7] Flotten   Schwarm (Turtles), Turtle-Programme, Funde, P. Craft
+--        Claude   Begleit-Droide (eigene App, Programm "claude" auf einer Turtle)
 --   [8] Daten     Disketten sichern, Notizen und OS auf Diskette
 --   [9] Web       Textbrowser (Wikis, Dokus, Pastebin)
 --   [10] Rechner  Taschenrechner mit Prozent und Stacks
@@ -27,12 +29,13 @@
 --   [16] Dienste und Start
 -- ======================================================================
 
--- Version: RELEASE wird angezeigt (1.1.0 = erstes Update der Vollversion).
+-- Version: RELEASE wird angezeigt (1.1.0 = erstes Update der Vollversion,
+-- 1.2.0 = Claude).
 -- VERSION ist die interne Update-Nummer: steigt mit jeder Fassung und muss
 -- groesser als "8.0" sein (so hiess die erste Vollversion), sonst findet ein
 -- dort installiertes OS das Update nicht. Nirgends angezeigt.
-local VERSION = "8.1"
-local RELEASE = "1.1.0"
+local VERSION = "8.2"
+local RELEASE = "1.2.0"
 local EDITION = "pc"     -- "pocket" in gts_pocket.lua
 local READONLY = (EDITION ~= "pc")      -- Pocket/Handy: nur anzeigen, keine Befehle
 local PHONE = (EDITION == "phone")      -- GTS Phone: Handy fuer Freunde (Lager, Notizen, Rechner ...)
@@ -1660,13 +1663,22 @@ end
 
 -- Setzt Buttons nebeneinander, sodass der letzte bei xr endet.
 -- Rueckgabe: x des ersten Buttons.
-function UI.buttonsRight(list, y, xr)
+function UI.buttonsRight(list, y, xr, xl)
     local total = -1
     for _, b in ipairs(list) do
         b.w = b.w or (#b.text + 2)
         total = total + b.w + 1
     end
-    local x = xr - total + 1
+    -- zu breit (schmaler Schirm): erst den Rand in den Buttons weglassen
+    xl = xl or 1
+    if xr - total + 1 < xl then
+        total = -1
+        for _, b in ipairs(list) do
+            if b.w == #b.text + 2 then b.w = #b.text end
+            total = total + b.w + 1
+        end
+    end
+    local x = math.max(xl, xr - total + 1)
     local left = x
     for _, b in ipairs(list) do
         b.x, b.y = x, y
@@ -1821,7 +1833,7 @@ function UI.taskLayout()
             need = need + #app.title + 2
         end
     end
-    local out = { W = W, n = #Apps.list, tabs = {}, list = tabs, homeW = 6 }
+    local out = { W = W, n = #Apps.list, tabs = {}, list = tabs, homeW = (EDITION == "claude") and 8 or 6 }
     local tray = 3 + 7                      -- Ausschalter + Uhr
     local x = out.homeW + 2
     if x + need - 1 + 1 + tray <= W then
@@ -1857,7 +1869,8 @@ function UI.taskbar()
     local app = Kernel.app
     UI.surface = colors.gray
     UI.fill(1, y, W, bh, colors.gray)
-    drawTab(1, y, L.homeW, "HOME", app.id == "home", function() Kernel.open("home") end)
+    local home = Apps.byId.home
+    drawTab(1, y, L.homeW, (EDITION == "claude") and "CLAUDE" or "HOME", app == home, function() Kernel.open("home") end)
     local x = L.homeW + 2
     if L.mode == "tabs" then
         for _, t in ipairs(L.tabs) do
@@ -2453,6 +2466,14 @@ local function homeCards()
         cards[#cards + 1] = { label = "SCHWARM", value = (total == 0) and "keine Turtles" or (online .. " von " .. total .. " online"),
                               short = online .. "/" .. total, dot = (online > 0) and colors.lime or colors.lightGray, app = "swarm" }
     end
+    local cl = Apps.byId.claude
+    local cu = cl and cl.unit and cl:unit()
+    if cu then
+        local run = cu.prog == "claude" and not cu.paused and cu.online
+        local m = run and cu.ext and cu.ext.m
+        cards[#cards + 1] = { label = "CLAUDE", value = (not cu.online) and "offline" or (run and ((cl.MODES and cl.MODES[m or ""]) or "an"):lower() or "aus"),
+                              short = run and "an" or "aus", dot = run and colors.lime or colors.orange, app = "claude" }
+    end
     if Finds and #Finds.list > 0 then
         cards[#cards + 1] = { label = "FUNDE", value = #Finds.list .. " offen", short = tostring(#Finds.list),
                               dot = colors.yellow, app = "swarm", finds = true }
@@ -2965,7 +2986,7 @@ Apps.register(Editor)
 -- aendern. Die Buttons DD, CHUNK und T uebertragen sie an die Turtles.
 -- gts_turtle.lua ist der Agent selbst: UPDATE spielt ihn auf alle Turtles,
 -- TURTLE-DISK (DATEN) schreibt ihn als Installer auf eine Diskette.
-local PROGRAM_FILES, TURTLE_INSTALLER, GPS_INSTALLER = {}, "", ""   -- (Pocket: leer)
+local PROGRAM_FILES, TURTLE_INSTALLER, GPS_INSTALLER, LUA_APP_FILES = {}, "", "", {}   -- (Pocket: leer)
 -- @@PC-BEGIN
 -- @@PROGRAMS-BEGIN
 PROGRAM_FILES = {
@@ -3637,10 +3658,2277 @@ local text = (#bad == 0) and "TEST OK: " or ("TEST FEHLER: " .. table.concat(bad
 text = text .. table.concat(good, ", ")
 return #bad == 0, text
 ]===],
+    ["claude.lua"] = [===[
+-- GTS-PROG claude 1
+-- ======================================================================
+-- CLAUDE - Begleit-Droide fuer die Basis              (GTS OS 1.2, Agent 5.4)
+-- Laeuft dauerhaft auf einer Turtle. Gedacht als Begleiter: folgt, bewacht,
+-- patrouilliert, baut Boeden/Daecher/Waende, craftet Fackeln, fuehrt ein
+-- Besucher-Log und redet - trocken, selten und nur, wenn es passt.
+--
+-- Sicherheit (gilt in jedem Modus, egal woher ein Befehl kommt):
+--   - baut NIE etwas ab (in diesem Programm gibt es keinen Grab-Befehl),
+--   - betritt nur Felder, die ein Geo-Scan als frei kennt,
+--   - nie Wasser/Lava (fliegt darueber), nie naeher als 2 Bloecke an
+--     Create-Maschinen (Werkstationen wie Depot/Basin ausgenommen),
+--   - nie weiter als 100 Bloecke (waagerecht) vom Host-PC, nie in Sperrzonen,
+--   - schlaegt nur Monster - und sehr selten einen Freund aus der Stups-Liste.
+--
+-- Ausruestung: Ender/Wireless Modem (fest), Diamantschwert (Arbeitsseite).
+-- Im Inventar: Chat Box, Player Detector, Environment Detector, Geo Scanner,
+-- Kompass, Speaker, Chunky, Werkbank (Crafting Table). Etwas Kohle.
+-- Spind: Kiste unter der Basis (fuer Crafting und Baumaterial).
+--
+-- Aufbau:  [1] Grundlagen  [2] Einstellungen  [3] Karte  [4] Sinne
+--          [5] Wege        [6] Stimme         [7] Leute  [8] Kampf
+--          [9] Bauen/Craften  [10] Befehle   [11] Modi  [12] Ablauf
+-- ======================================================================
+local T, args = ...
+args = type(args) == "table" and args or {}
+if not (T.inbox and T.reply and T.setRole) then return false, "CLAUDE braucht Agent 5.4 (UPDATE)" end
+T.setRole("claude")
+
+-- ======================================================================
+-- [1] GRUNDLAGEN
+-- ======================================================================
+local floor, abs, max, min, sqrt = math.floor, math.abs, math.max, math.min, math.sqrt
+local band, bor, bnot = bit32.band, bit32.bor, bit32.bnot
+local now = os.clock
+local function epoch() return floor(os.epoch("utc") / 1000) end
+local pos = T.pos                               -- live: x, y, z, f (relativ zur Basis)
+local DX, DZ = T.DX, T.DZ
+local DIR = "/gts/claude"
+fs.makeDir(DIR)
+math.randomseed(os.epoch("utc") % 2147483647)
+
+local function readT(path)
+    if not fs.exists(path) then return nil end
+    local h = fs.open(path, "r")
+    if not h then return nil end
+    local t = textutils.unserialize(h.readAll() or "")
+    h.close()
+    return type(t) == "table" and t or nil
+end
+local function writeT(path, t, compact)
+    local h = fs.open(path .. ".neu", "w")
+    if not h then return false end
+    h.write(textutils.serialize(t))
+    h.close()
+    if fs.exists(path) then fs.delete(path) end
+    fs.move(path .. ".neu", path)
+    return true
+end
+
+local function clamp(v, a, b) return max(a, min(b, v)) end
+local function hdist(ax, az, bx, bz) local dx, dz = ax - bx, az - bz return sqrt(dx * dx + dz * dz) end
+local function mdist(ax, ay, az, bx, by, bz) return abs(ax - bx) + abs(ay - by) + abs(az - bz) end
+local function short(name) return (tostring(name):gsub("^.-:", "")) end
+local function yieldNow() os.queueEvent("cl_y") os.pullEvent("cl_y") end
+local function sleep(s) os.sleep(s) end
+
+-- Packt eine Zelle (relativ, |x|,|z| < 1024, |y| < 512) in eine Zahl.
+local function K(x, y, z) return ((x + 1024) * 2048 + (z + 1024)) * 1024 + (y + 512) end
+local function UK(k)
+    local y = k % 1024 - 512
+    local t = (k - (y + 512)) / 1024
+    local z = t % 2048 - 1024
+    local x = (t - (z + 1024)) / 2048 - 1024
+    return x, y, z
+end
+
+-- Ereignisse fuers Tagebuch (OS/Fernbedienung holen es ab)
+local Log = { list = {}, v = 0 }
+local function logEv(kind, text)
+    Log.list[#Log.list + 1] = { t = epoch(), k = kind, text = tostring(text):sub(1, 80) }
+    while #Log.list > 150 do table.remove(Log.list, 1) end
+    Log.v, Log.dirty = Log.v + 1, true
+end
+
+-- ======================================================================
+-- [2] EINSTELLUNGEN (Fernbedienung/OS aendern sie per Funk)
+-- ======================================================================
+-- Je Schluessel: Standard und Pruefung. Alles andere wird ignoriert.
+local CHOICE = function(list) return function(v) for _, x in ipairs(list) do if v == x then return v end end end end
+local NUM = function(a, b) return function(v) v = tonumber(v) return v and clamp(floor(v), a, b) end end
+local BOOL = function(v) if type(v) == "boolean" then return v end end
+local NAMES = function(v)
+    if type(v) ~= "table" then return nil end
+    local out = {}
+    for i = 1, min(#v, 8) do
+        if type(v[i]) == "string" and v[i]:find("^[%w_]+$") and #v[i] <= 16 then out[#out + 1] = v[i] end
+    end
+    return out
+end
+local CELL = function(v)
+    if v == false then return false end
+    if type(v) == "table" and tonumber(v.x) and tonumber(v.y) and tonumber(v.z) then
+        return { x = floor(v.x), y = floor(v.y), z = floor(v.z) }
+    end
+end
+local CFG_DEF = {
+    idle = { "park", CHOICE({ "park", "hover", "guard" }) },   -- FREI: parken, schweben, Wache
+    hoverR = { 12, NUM(4, 40) },        -- Schweb-Radius um den Parkplatz
+    park = { false, CELL },             -- Parkplatz (relativ), false = Basis
+    nightHome = { true, BOOL },         -- nachts zum Parkplatz
+    followDist = { 3, NUM(2, 8) },
+    patrolWait = { 5, NUM(0, 60) },
+    guardR = { 10, NUM(4, 16) },
+    mobs = { true, BOOL },              -- Monster angreifen
+    creepers = { true, BOOL },
+    talk = { 2, NUM(0, 3) },            -- 0 still, 1 wenig, 2 normal, 3 gespraechig
+    greet = { true, BOOL },
+    poke = { true, BOOL },
+    pokeOdds = { 20, NUM(1, 500) },     -- Stups bei 1 von n Begegnungen
+    pokeTargets = { { "ThaReN" }, NAMES },
+    leash = { 100, NUM(16, 100) },      -- max. Abstand zum Host-PC (waagerecht)
+    center = { false, CELL },           -- Host-PC (relativ), false = Basis
+    createGap = { 2, NUM(1, 4) },
+    torches = { false, BOOL },          -- Fackeln selbst setzen (sonst nur anbieten)
+    torchStock = { 16, NUM(0, 64) },
+    autoCraft = { true, BOOL },
+    locker = { "down", CHOICE({ "down", "up", "back" }) },
+    owner = { false, function(v) if v == false or (type(v) == "string" and v:find("^[%w_]+$") and #v <= 16) then return v end end },
+    chatRange = { 48, NUM(8, 128) },
+}
+local cfg, cfgV = {}, 1
+for k, d in pairs(CFG_DEF) do cfg[k] = d[1] end
+do
+    local saved = readT(DIR .. "/cfg.db")
+    for k, v in pairs(saved or {}) do
+        local d = CFG_DEF[k]
+        if d then local ok = d[2](v) if ok ~= nil then cfg[k] = ok end end
+    end
+end
+if type(args.owner) == "string" and args.owner:find("^[%w_]+$") then cfg.owner = args.owner end
+local function setCfg(k, v)
+    local d = CFG_DEF[k]
+    if not d then return false end
+    local ok = d[2](v)
+    if ok == nil then return false end
+    cfg[k] = ok
+    cfgV = cfgV + 1
+    writeT(DIR .. "/cfg.db", cfg)
+    return true
+end
+local SAFE_CREATE = { "depot", "basin", "blaze_burner", "item_vault", "fluid_tank", "casing", "toolbox",
+                      "clipboard", "seat", "crafting_blueprint", "display_board", "nixie", "placard", "railing",
+                      "scaffold", "ladder", "window", "glass", "door", "tiles", "bricks", "slab", "stairs" }
+
+-- Gedaechtnis: Leute, Wegpunkte, Sperrzonen, Bauecken
+local mem = readT(DIR .. "/mem.db") or {}
+mem.people = type(mem.people) == "table" and mem.people or {}
+mem.wps = type(mem.wps) == "table" and mem.wps or {}
+mem.zones = type(mem.zones) == "table" and mem.zones or {}
+mem.visits = type(mem.visits) == "table" and mem.visits or {}
+Log.list = type(mem.log) == "table" and mem.log or {}
+local memDirty = false
+local function saveMem()
+    mem.log = Log.list
+    writeT(DIR .. "/mem.db", mem, true)
+    memDirty, Log.dirty = false, false
+end
+
+-- ======================================================================
+-- [3] KARTE: was Claude ueber die Basis weiss
+-- ======================================================================
+-- 16er-Sektionen, je Ebene 128 Zahlen zu 32 Bit:
+--   k = bekannt (Geo-Scan-Kern oder befahren), s = fest, w = Wasser/Lava,
+--   d = Gefahr (Create-Maschine samt Abstand).
+local Map = { sec = {}, dirty = false, known = 0 }
+local BIT = {}
+for i = 0, 31 do BIT[i] = 2 ^ i end
+local LAYERS = { "k", "s", "w", "d" }
+local function newLayer() local t = {} for i = 1, 128 do t[i] = 0 end return t end
+
+local function secKey(sx, sy, sz) return ((sx + 512) * 1024 + (sy + 512)) * 1024 + (sz + 512) end
+local function secXYZ(key)
+    local sz = key % 1024
+    local t = (key - sz) / 1024
+    local sy = t % 1024
+    return (t - sy) / 1024 - 512, sy - 512, sz - 512
+end
+local cacheKey, cacheSec
+local function secAt(x, y, z, create)
+    local sx, sy, sz = floor(x / 16), floor(y / 16), floor(z / 16)
+    local key = secKey(sx, sy, sz)
+    local s
+    if key == cacheKey then s = cacheSec else s = Map.sec[key] end
+    if not s and create then
+        s = { k = newLayer(), s = newLayer(), w = newLayer(), d = newLayer() }
+        Map.sec[key] = s
+    end
+    if not s then return nil end
+    cacheKey, cacheSec = key, s
+    local idx = (x - sx * 16) + (z - sz * 16) * 16 + (y - sy * 16) * 256
+    return s, floor(idx / 32) + 1, BIT[idx % 32]
+end
+function Map.get(layer, x, y, z)
+    local s, i, b = secAt(x, y, z)
+    return s ~= nil and band(s[layer][i], b) ~= 0
+end
+function Map.set(layer, x, y, z, on)
+    local s, i, b = secAt(x, y, z, true)
+    local cur = band(s[layer][i], b) ~= 0
+    if cur == on then return end
+    if on then s[layer][i] = bor(s[layer][i], b) else s[layer][i] = band(s[layer][i], bnot(b)) end
+    if layer == "k" then Map.known = Map.known + (on and 1 or -1) end
+    Map.dirty = true
+end
+-- 0 unbekannt, 1 frei, 2 fest, 3 Wasser/Lava, 4 Gefahr
+function Map.state(x, y, z)
+    local s, i, b = secAt(x, y, z)
+    if not s then return 0 end
+    if band(s.s[i], b) ~= 0 then return 2 end
+    if band(s.w[i], b) ~= 0 then return 3 end
+    if band(s.d[i], b) ~= 0 then return 4 end
+    if band(s.k[i], b) ~= 0 then return 1 end
+    return 0
+end
+
+local function isLiquid(name)
+    return name == "minecraft:water" or name == "minecraft:lava" or name == "minecraft:bubble_column"
+        or (name:find("flowing", 1, true) ~= nil) or name:find(":molten_", 1, true) ~= nil
+end
+local function isCreate(name)
+    local mod = name:match("^([^:]+):") or ""
+    if mod:sub(1, 6) ~= "create" then return false end
+    local n = name:sub(#mod + 2)
+    for _, part in ipairs(SAFE_CREATE) do if n:find(part, 1, true) then return false end end
+    return true
+end
+-- Ein Block (gesehen beim Fahren oder per Scan) an x,y,z
+function Map.block(x, y, z, name)
+    if not name or name == "minecraft:air" or name == "minecraft:cave_air" or name == "minecraft:void_air" then
+        Map.set("s", x, y, z, false)
+        Map.set("w", x, y, z, false)
+        Map.set("k", x, y, z, true)
+        return
+    end
+    Map.set("k", x, y, z, true)
+    if isLiquid(name) then
+        Map.set("w", x, y, z, true)
+        Map.set("s", x, y, z, false)
+    else
+        Map.set("s", x, y, z, true)
+        Map.set("w", x, y, z, false)
+    end
+    if isCreate(name) then
+        local g = cfg.createGap
+        for dx = -g, g do for dy = -g, g do for dz = -g, g do
+            Map.set("d", x + dx, y + dy, z + dz, true)
+        end end end
+    end
+end
+
+-- Geo-Scan auswerten (Versaetze in Welt-Achsen um die Turtle). Als bekannt gilt
+-- nur der Kern (Radius r - Create-Abstand): dort sind auch alle Maschinen in
+-- der Naehe im Scan enthalten.
+function Map.scan(list, r)
+    local cx, cy, cz = pos.x, pos.y, pos.z
+    local core = r - cfg.createGap
+    local solid, liquid = {}, {}
+    local creates = {}
+    for _, b in ipairs(list) do
+        if type(b) == "table" and type(b.name) == "string" and tonumber(b.x)
+           and not (b.x == 0 and b.y == 0 and b.z == 0) then          -- (0,0,0) = Claude selbst
+            local rx, ry, rz = T.offsetToRel(b.x, b.y, b.z)
+            local x, y, z = cx + rx, cy + ry, cz + rz
+            local k = K(x, y, z)
+            if isLiquid(b.name) then liquid[k] = true else solid[k] = true end
+            if isCreate(b.name) then creates[#creates + 1] = { x, y, z } end
+            if b.name:find("diamond_ore", 1, true) then Map.diamond = { x = x, y = y, z = z } end
+        end
+    end
+    -- Kern: alles neu (abgebaute Bloecke werden frei, Gefahr neu berechnet)
+    local c2 = core * core
+    for dx = -core, core do
+        for dz = -core, core do
+            for dy = -core, core do
+                if dx * dx + dy * dy + dz * dz <= c2 then
+                    local x, y, z = cx + dx, cy + dy, cz + dz
+                    local k = K(x, y, z)
+                    Map.set("k", x, y, z, true)
+                    Map.set("s", x, y, z, solid[k] == true)
+                    Map.set("w", x, y, z, liquid[k] == true)
+                    Map.set("d", x, y, z, false)
+                end
+            end
+        end
+        if dx % 4 == 0 then yieldNow() end
+    end
+    -- Rand: nur feste Bloecke und Wasser eintragen (frei ist er nicht sicher)
+    for k in pairs(solid) do
+        local x, y, z = UK(k)
+        Map.set("s", x, y, z, true) Map.set("w", x, y, z, false)
+    end
+    for k in pairs(liquid) do
+        local x, y, z = UK(k)
+        Map.set("w", x, y, z, true) Map.set("s", x, y, z, false)
+    end
+    local g = cfg.createGap
+    for _, c in ipairs(creates) do
+        for dx = -g, g do for dy = -g, g do for dz = -g, g do
+            Map.set("d", c[1] + dx, c[2] + dy, c[3] + dz, true)
+        end end end
+    end
+    Map.lastScan = { x = cx, y = cy, z = cz, t = now() }
+end
+
+-- ---------- Speichern (Lauflaengen-Kodierung je Ebene) ----------
+local function encLayer(t)
+    local out, i = {}, 1
+    while i <= 128 do
+        local v = t[i]
+        if v == 0 or v == 4294967295 then
+            local j = i
+            while j < 128 and t[j + 1] == v do j = j + 1 end
+            out[#out + 1] = ((v == 0) and "z" or "f") .. (j - i + 1)
+            i = j + 1
+        else
+            out[#out + 1] = string.format("%x", v)
+            i = i + 1
+        end
+    end
+    return table.concat(out, ",")
+end
+local function decLayer(s)
+    local t = {}
+    for tok in tostring(s):gmatch("[^,]+") do
+        local c, n = tok:sub(1, 1), tonumber(tok:sub(2))
+        if (c == "z" or c == "f") and n then
+            for _ = 1, n do t[#t + 1] = (c == "z") and 0 or 4294967295 end
+        else
+            t[#t + 1] = tonumber(tok, 16) or 0
+        end
+    end
+    if #t ~= 128 then return nil end
+    return t
+end
+local function popcount(v)
+    local n = 0
+    while v ~= 0 do v = band(v, v - 1) n = n + 1 end
+    return n
+end
+function Map.save()
+    local h = fs.open(DIR .. "/map.neu", "w")
+    if not h then return end
+    h.write("CLAUDE-MAP 1\n")
+    for key, s in pairs(Map.sec) do
+        local sx, sy, sz = secXYZ(key)
+        h.write(sx .. "," .. sy .. "," .. sz .. "|" .. encLayer(s.k) .. "|" .. encLayer(s.s) .. "|" .. encLayer(s.w) .. "|" .. encLayer(s.d) .. "\n")
+    end
+    h.close()
+    if fs.exists(DIR .. "/map.db") then fs.delete(DIR .. "/map.db") end
+    fs.move(DIR .. "/map.neu", DIR .. "/map.db")
+    Map.dirty, Map.savedT = false, now()
+end
+function Map.load()
+    if not fs.exists(DIR .. "/map.db") then return end
+    local h = fs.open(DIR .. "/map.db", "r")
+    if not h then return end
+    local head = h.readLine()
+    if head ~= "CLAUDE-MAP 1" then h.close() return end
+    while true do
+        local line = h.readLine()
+        if not line then break end
+        local key, a, b, c, d = line:match("^([%-%d]+,[%-%d]+,[%-%d]+)|([^|]*)|([^|]*)|([^|]*)|([^|]*)$")
+        if key then
+            local s = { k = decLayer(a), s = decLayer(b), w = decLayer(c), d = decLayer(d) }
+            if s.k and s.s and s.w and s.d then
+                local sx, sy, sz = key:match("^(%-?%d+),(%-?%d+),(%-?%d+)$")
+                Map.sec[secKey(tonumber(sx), tonumber(sy), tonumber(sz))] = s
+                for i = 1, 128 do Map.known = Map.known + popcount(s.k[i]) end
+            end
+        end
+    end
+    h.close()
+end
+-- Alles vergessen (Basis umgebaut): Fernbedienung > KARTE > VERGESSEN
+function Map.clear()
+    Map.sec, Map.known, Map.dirty = {}, 0, true
+    cacheKey, cacheSec = nil, nil
+end
+
+-- Draufsicht fuer OS/Fernbedienung: je Spalte ein Zeichen. Welt-Achsen, wenn
+-- die Basis Welt-Koordinaten hat (sonst relativ). Hoehe = Claudes Flughoehe:
+--   " " unbekannt, "." Boden darunter (frei), "#" Wand/Hindernis auf
+--   Flughoehe oder darueber, "~" Wasser, "!" Create/Gefahr
+function Map.top(wcx, wcz, r)
+    local rows = {}
+    local world = T.relToWorld(0, 0, 0) ~= nil
+    local wy0 = select(2, T.relToWorld(pos.x, pos.y, pos.z)) or pos.y
+    for dz = -r, r do
+        local row = {}
+        for dx = -r, r do
+            local x, z, y0
+            if world then
+                local rx, ry, rz = T.worldToRel(wcx + dx, wy0, wcz + dz)
+                x, z, y0 = rx, rz, ry
+            else
+                x, z, y0 = wcx + dx, wcz + dz, pos.y
+            end
+            local ch = " "
+            for y = y0 + 3, y0 - 12, -1 do
+                local st = Map.state(x, y, z)
+                if st == 2 then ch = (y >= y0) and "#" or "." break
+                elseif st == 3 then ch = "~" break
+                elseif st == 4 then ch = "!" break
+                elseif st == 1 and ch == " " then ch = "." end
+            end
+            row[#row + 1] = ch
+        end
+        rows[#rows + 1] = table.concat(row)
+        if dz % 8 == 0 then yieldNow() end
+    end
+    return rows, world
+end
+
+-- ======================================================================
+-- [4] SINNE: Werkzeuge der Reihe nach kurz anlegen
+-- ======================================================================
+-- Das Schwert steckt an der Arbeitsseite. Alles andere wird fuer eine Abfrage
+-- kurz angelegt (T.use) - daher fragt Claude gebuendelt und nur so oft wie
+-- noetig: Spieler alle 2-4 s, Monster alle 3-8 s, Wetter/Licht alle 20 s.
+local Sense = { players = {}, playerT = -99, mobs = {}, mobT = -99, env = {}, envT = -99, scanT = -99,
+                listenT = -99, noSpy = false, seen = {} }
+local Voice, Cmd, People, Fight       -- weiter unten
+
+-- Englische Namen (so liefert sie der Environment Detector auf dem Server).
+local HOSTILE = {}
+for _, n in ipairs({ "zombie", "zombie villager", "husk", "drowned", "skeleton", "stray", "bogged", "spider",
+                     "cave spider", "creeper", "witch", "slime", "magma cube", "phantom", "pillager", "vindicator",
+                     "evoker", "vex", "blaze", "wither skeleton", "silverfish", "endermite", "guardian",
+                     "hoglin", "zoglin", "piglin brute", "breeze", "ravager" }) do HOSTILE[n] = true end
+Sense.HOSTILE = HOSTILE
+
+local function compassKnown() local _, c = T.world() return c ~= nil end
+
+-- Spieler in der Naehe (und gezielt gesuchte, z.B. das Folge-Ziel)
+function Sense.pollPlayers(extra)
+    local res, err = T.use("player", function(p)
+        local list = p.getPlayersInRange(64)
+        if type(list) ~= "table" then list = {} end
+        local want, info = {}, {}
+        for _, n in ipairs(list) do if type(n) == "string" then want[n] = true end end
+        for _, n in ipairs(extra or {}) do if type(n) == "string" then want[n] = true end end
+        for n in pairs(want) do
+            local ok, r = pcall(p.getPlayerPos, n)
+            if ok and type(r) == "table" and tonumber(r.x) then info[n] = r
+            elseif not ok then Sense.noSpy = true end           -- Config: playerSpy aus
+        end
+        return { names = list, info = info }
+    end)
+    Sense.playerT = now()
+    if type(res) ~= "table" then Sense.playerErr = err return false end
+    local t = now()
+    local seenNow = {}
+    for _, n in ipairs(res.names) do seenNow[n] = true end
+    for n, r in pairs(res.info) do
+        local e = Sense.players[n] or { name = n }
+        local wx, wy, wz = floor(r.x), floor(r.y), floor(r.z)
+        if e.wx and e.t and t - e.t > 0.2 then
+            e.speed = hdist(wx, wz, e.wx, e.wz) / (t - e.t)
+        end
+        e.wx, e.wy, e.wz, e.t = wx, wy, wz, t
+        local x, y, z = T.worldToRel(wx, wy, wz)
+        e.x, e.y, e.z = x, y, z
+        e.d = x and hdist(x, z, pos.x, pos.z) or nil
+        e.dy = y and (y - pos.y) or nil
+        e.hp, e.hpMax = tonumber(r.health), tonumber(r.maxHealth)
+        e.near = seenNow[n] == true
+        Sense.players[n] = e
+    end
+    for n, e in pairs(Sense.players) do
+        if not res.info[n] then
+            e.near = false
+            if t - (e.t or 0) > 600 then Sense.players[n] = nil end
+        end
+    end
+    Sense.names = res.names
+    return true
+end
+
+-- Monster (Environment Detector) und alle 20 s Wetter und Licht.
+function Sense.pollEnv(withMobs)
+    local wantEnv = now() - Sense.envT > 20
+    if not withMobs and not wantEnv then return true end
+    local res, err = T.use("env", function(p)
+        local out = {}
+        if withMobs then out.list, out.err = p.scanEntities(8) end
+        if wantEnv then
+            out.rain = p.isRaining()
+            out.thunder = p.isThunder()
+            out.light = p.getBlockLightLevel()
+            out.day = p.getDayLightLevel()
+            out.sky = p.getSkyLightLevel()
+            out.biome = p.getBiome()
+        end
+        return out
+    end)
+    if type(res) ~= "table" then Sense.envErr = err return false end
+    if wantEnv then
+        -- Licht = Fackeln usw. oder Tageslicht; "covered" = unter einem Dach
+        local bl, dl, sk = tonumber(res.light), tonumber(res.day), tonumber(res.sky)
+        Sense.env = { rain = res.rain == true, thunder = res.thunder == true, biome = res.biome,
+                      light = bl and max(bl, dl or 0) or nil, covered = sk ~= nil and sk < 15 }
+        Sense.envT = now()
+    end
+    if withMobs and type(res.list) == "table" and compassKnown() then
+        local mobs, people = {}, {}
+        for _, e in ipairs(res.list) do
+            if type(e) == "table" and type(e.name) == "string" and tonumber(e.x) then
+                local ox, oy, oz = T.offsetToRel(floor(e.x), floor(e.y + 0.01), floor(e.z))
+                local rec = { name = e.name, x = pos.x + ox, y = pos.y + oy, z = pos.z + oz,
+                              hp = tonumber(e.health), id = e.id }
+                if HOSTILE[e.name:lower()] then mobs[#mobs + 1] = rec
+                elseif Sense.players[e.name] then people[#people + 1] = rec end
+            end
+        end
+        Sense.mobs, Sense.mobT, Sense.bodies = mobs, now(), people
+    end
+    return true
+end
+
+-- Geo-Scan (Radius 8 ist kostenlos, Abklingzeit 2 s)
+function Sense.scan()
+    if not compassKnown() then Sense.scanErr = "Himmelsrichtung unbekannt" return false end
+    local wait = 2.1 - (now() - Sense.scanT)
+    if wait > 0 then sleep(wait) end
+    local list, err = T.scan(8)
+    Sense.scanT = now()
+    if type(list) ~= "table" and tostring(err):lower():find("cooldown") then
+        sleep(1.2)
+        list, err = T.scan(8)
+        Sense.scanT = now()
+    end
+    if type(list) ~= "table" then Sense.scanErr = tostring(err) return false end
+    Map.scan(list, 8)
+    Sense.scanErr = nil
+    return true
+end
+
+-- Chat Box kurz anlegen: wartende Saetze sagen, auf Befehle hoeren.
+-- Die Chat Box liefert beim Anlegen die letzte Chat-Nachricht noch einmal
+-- (Advanced Peripherals) - Befehle werden darum am Inhalt wiedererkannt.
+function Sense.listen(sec)
+    Sense.listenT = now()
+    local ok, err = T.use("chat", function(p)
+        local t0 = now()
+        Voice.flush(p)
+        local tm = os.startTimer(sec)
+        while true do
+            local ev, a, b, c, d = os.pullEvent()
+            if ev == "chat" then
+                -- hoert der PC mit, kommen Befehle von dort (dann ist nichts doppelt)
+                if now() > (Cmd.relayUntil or 0) then pcall(Cmd.chat, a, b, d, now() - t0 < 0.15) end
+            elseif ev == "timer" and a == tm then
+                break
+            elseif ev == "gts_pmsg" then
+                break
+            end
+            if #Voice.queue > 0 then Voice.flush(p) end
+        end
+        Voice.flush(p)
+        return true
+    end)
+    if not ok then
+        Sense.chatErr = err
+        if #Voice.queue > 0 then Voice.fallback() end
+        if sec > 0.2 then sleep(sec) end
+    end
+end
+
+-- Kurzer Ton (Speaker)
+function Sense.sound(kind)
+    T.use("speaker", function(p)
+        if kind == "hit" then p.playNote("bit", 1, 6)
+        elseif kind == "found" then p.playNote("chime", 1, 18) os.sleep(0.15) p.playNote("chime", 1, 22)
+        elseif kind == "alarm" then p.playNote("bell", 2, 18) os.sleep(0.2) p.playNote("bell", 2, 12)
+        elseif kind == "snore" then p.playNote("didgeridoo", 0.6, 2)
+        elseif kind == "boot" then
+            for i, n in ipairs({ 12, 16, 19, 24 }) do p.playNote("pling", 0.8, n) if i < 4 then os.sleep(0.12) end end
+        else p.playNote("pling", 0.8, 14) end
+        return true
+    end)
+end
+
+-- Tageszeit im Spiel (0-24), Nacht = Schlafen moeglich
+local function mcTime() return os.time() end
+local function isNight() local t = mcTime() return t >= 18.54 or t < 5.46 end
+
+-- ======================================================================
+-- [5] WEGE: sicher fliegen, nie abbauen
+-- ======================================================================
+local Nav = { temp = {}, stuck = 0 }
+local NB = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 }, { 0, 1, 0 }, { 0, -1, 0 } }
+
+function Nav.center()
+    local c = cfg.center
+    if c then return c.x, c.y, c.z end
+    return 0, 0, 0
+end
+function Nav.leashDist(x, z) local cx, _, cz = Nav.center() return hdist(x, z, cx, cz) end
+function Nav.inZone(x, y, z)
+    for _, zn in ipairs(mem.zones) do
+        if x >= zn.x1 and x <= zn.x2 and z >= zn.z1 and z <= zn.z2 and y >= zn.y1 and y <= zn.y2 then return true end
+    end
+    return false
+end
+-- Darf Claude in dieses Feld? strict = nur bekannte Felder.
+-- slack: liegt Claude ausserhalb der Leine, darf es zurueck (nicht weiter weg).
+function Nav.ok(x, y, z, strict, slack, escape)
+    local st = Map.state(x, y, z)
+    if st == 2 then return false end
+    if (st == 3 or st == 4) and not escape then return false end
+    if st == 0 and strict then return false end
+    local tb = Nav.temp[K(x, y, z)]
+    if tb and tb > now() then return false end
+    local d = Nav.leashDist(x, z)
+    if d > cfg.leash and not (slack and d <= slack) then return false end
+    if Nav.inZone(x, y, z) and not escape then return false end
+    return true
+end
+function Nav.here() return Map.state(pos.x, pos.y, pos.z) end
+
+-- A* in 3D. goal(x,y,z) -> true am Ziel; (hx,hy,hz) fuer die Schaetzung.
+-- Unbekannte Felder kosten mehr (gefahren wird dort erst nach einem Scan).
+-- Rueckgabe: Liste von Feldern (erstes = Startfeld) oder nil, bestes Feld.
+function Nav.plan(goal, hx, hy, hz, opts)
+    opts = opts or {}
+    local sx, sy, sz = pos.x, pos.y, pos.z
+    local here = Nav.leashDist(sx, sz)
+    local slack = (here > cfg.leash) and (here + 0.01) or nil
+    local startK = K(sx, sy, sz)
+    local g, came, dirOf, closed = { [startK] = 0 }, {}, {}, {}
+    local hk, hf = { startK }, { 0 }
+    local function push(k, f)
+        local i = #hk + 1
+        hk[i], hf[i] = k, f
+        while i > 1 do
+            local p = floor(i / 2)
+            if hf[p] <= hf[i] then break end
+            hk[p], hk[i], hf[p], hf[i] = hk[i], hk[p], hf[i], hf[p]
+            i = p
+        end
+    end
+    local function pop()
+        local k = hk[1]
+        local n = #hk
+        hk[1], hf[1] = hk[n], hf[n]
+        hk[n], hf[n] = nil, nil
+        n = n - 1
+        local i = 1
+        while true do
+            local l, r, m = i * 2, i * 2 + 1, i
+            if l <= n and hf[l] < hf[m] then m = l end
+            if r <= n and hf[r] < hf[m] then m = r end
+            if m == i then break end
+            hk[m], hk[i], hf[m], hf[i] = hk[i], hk[m], hf[i], hf[m]
+            i = m
+        end
+        return k
+    end
+    local function h(x, y, z) return abs(x - hx) + abs(y - hy) + abs(z - hz) end
+    local bestK, bestH = startK, h(sx, sy, sz)
+    local limit, exp = opts.limit or 6000, 0
+    local found
+    while #hk > 0 do
+        local k = pop()
+        if not closed[k] then
+            closed[k] = true
+            local x, y, z = UK(k)
+            if goal(x, y, z) and (k ~= startK or opts.allowStart) then found = k break end
+            local hh = h(x, y, z)
+            if hh < bestH then bestK, bestH = k, hh end
+            exp = exp + 1
+            if exp > limit then break end
+            if exp % 250 == 0 then yieldNow() end
+            local gk, dk = g[k], dirOf[k]
+            for i = 1, 6 do
+                local d = NB[i]
+                local nx, ny, nz = x + d[1], y + d[2], z + d[3]
+                local nk = K(nx, ny, nz)
+                if not closed[nk] and Nav.ok(nx, ny, nz, not opts.unknown, slack, opts.escape) then
+                    local st = Map.state(nx, ny, nz)
+                    local cost = 1 + ((st == 0) and 3 or 0) + ((st >= 3) and 6 or 0)
+                    if dk and dk ~= i and i <= 4 then cost = cost + 0.6 end     -- Drehen kostet Zeit
+                    local ng = gk + cost
+                    if not g[nk] or ng < g[nk] - 1e-9 then
+                        g[nk], came[nk], dirOf[nk] = ng, k, i
+                        push(nk, ng + h(nx, ny, nz))
+                    end
+                end
+            end
+        end
+    end
+    local endK = found or (opts.partial and bestK ~= startK and bestK) or nil
+    if not endK then return nil end
+    local path, k = {}, endK
+    while k do
+        local x, y, z = UK(k)
+        table.insert(path, 1, { x = x, y = y, z = z })
+        k = came[k]
+    end
+    return path, found ~= nil
+end
+
+-- Ein Schritt ins Nachbarfeld. Nie abbauen: steht etwas im Weg, wird es
+-- nur in die Karte eingetragen. Rueckgabe: true oder false, "block"/"wesen"/"tank".
+function Nav.stepTo(x, y, z)
+    local dx, dy, dz = x - pos.x, y - pos.y, z - pos.z
+    local dir = (dy == 1) and "up" or ((dy == -1) and "down" or "fwd")
+    if dir == "fwd" then T.face((dx == 1) and 0 or ((dx == -1) and 2 or ((dz == 1) and 1 or 3))) end
+    local seen, info = T.inspect(dir)
+    if seen and type(info) == "table" and type(info.name) == "string" then
+        Map.block(x, y, z, info.name)
+        if isLiquid(info.name) then return false, "wasser" end
+        return false, "block"
+    end
+    local fuel = turtle.getFuelLevel()
+    if fuel ~= "unlimited" and fuel < 1 then return false, "tank" end
+    local mv = (dir == "up") and turtle.up or ((dir == "down") and turtle.down or turtle.forward)
+    if mv() then
+        Map.block(pos.x, pos.y, pos.z, nil)
+        return true
+    end
+    return false, "wesen"
+end
+
+-- Faehrt zum Ziel. goal = { test = fn(x,y,z), x, y, z }.
+-- opts: tick() -> true bricht ab; maxSteps = nach so vielen Schritten zurueck
+-- (z.B. beim Folgen neu planen); partial = so nah wie moeglich.
+-- Rueckgabe: true (am Ziel) | "teil" (maxSteps erreicht) | false, Grund.
+function Nav.go(goal, opts)
+    opts = opts or {}
+    local fails, scans, steps = 0, 0, 0
+    for _ = 1, opts.rounds or 60 do
+        if goal.test(pos.x, pos.y, pos.z) then Nav.stuck = 0 return true end
+        if opts.tick and opts.tick() then return false, "abbruch" end
+        T.check()
+        local path, full = Nav.plan(goal.test, goal.x, goal.y, goal.z,
+                                    { unknown = true, limit = opts.limit, partial = opts.partial, escape = Nav.here() >= 3 })
+        if not path then
+            local ls = Map.lastScan
+            if scans < 2 and (not ls or mdist(ls.x, ls.y, ls.z, pos.x, pos.y, pos.z) > 1 or now() - ls.t > 20) and Sense.scan() then
+                scans = scans + 1
+            else
+                Nav.stuck = Nav.stuck + 1
+                return false, "kein weg"
+            end
+        else
+            local moved, completed = false, true
+            for i = 2, #path do
+                local c = path[i]
+                if opts.tick and opts.tick() then return false, "abbruch" end
+                local st = Map.state(c.x, c.y, c.z)
+                if st == 0 then
+                    if not Sense.scan() then
+                        Nav.stuck = Nav.stuck + 1
+                        return false, "scan: " .. tostring(Sense.scanErr)
+                    end
+                    scans = scans + 1
+                    completed = false
+                    break
+                end
+                if not Nav.ok(c.x, c.y, c.z, true, nil, Nav.here() >= 3) then completed = false break end
+                local ok, why = Nav.stepTo(c.x, c.y, c.z)
+                if not ok then
+                    completed = false
+                    if why == "tank" then return false, "tank" end
+                    if why == "wesen" then
+                        if not (Fight and Fight.clearWay(c)) then
+                            Nav.temp[K(c.x, c.y, c.z)] = now() + 4
+                            sleep(0.4)
+                        end
+                    end
+                    fails = fails + 1
+                    break
+                end
+                moved = true
+                steps = steps + 1
+                if opts.maxSteps and steps >= opts.maxSteps then return "teil" end
+                if i % 4 == 0 then T.check() end
+            end
+            if not moved then fails = fails + 1 end
+            if fails > 10 then
+                Nav.stuck = Nav.stuck + 1
+                return false, "festgefahren"
+            end
+            -- Teilweg zu Ende gefahren: naeher geht es gerade nicht
+            if completed and not full and not goal.test(pos.x, pos.y, pos.z) then return "teil" end
+        end
+    end
+    return false, "zu weit"
+end
+
+-- Ziel: genau ein Feld
+function Nav.cell(x, y, z)
+    return { x = x, y = y, z = z, test = function(a, b, c) return a == x and b == y and c == z end }
+end
+-- Ziel: irgendwo in der Naehe eines Punkts (waagerecht r1..r2, Hoehe y0..y1)
+function Nav.near(x, y, z, r1, r2, y0, y1)
+    return { x = x, y = y + y0, z = z, test = function(a, b, c)
+        local d = max(abs(a - x), abs(c - z))
+        return d >= r1 and d <= r2 and b >= y + y0 and b <= y + y1
+    end }
+end
+
+-- Aus einer schlechten Lage befreien (Wasser, Gefahr, eingesperrt):
+-- naechstes sichere Feld suchen, ohne etwas abzubauen.
+function Nav.rescue()
+    local okGoal = { x = pos.x, y = pos.y, z = pos.z, test = function(a, b, c)
+        return not (a == pos.x and b == pos.y and c == pos.z) and Nav.ok(a, b, c, true) and Map.state(a, b, c) == 1
+    end }
+    local path = Nav.plan(okGoal.test, pos.x, pos.y, pos.z, { unknown = false, escape = true, limit = 3000 })
+    if not path then
+        Sense.scan()
+        path = Nav.plan(okGoal.test, pos.x, pos.y, pos.z, { unknown = false, escape = true, limit = 3000 })
+    end
+    if not path then return false end
+    for i = 2, #path do
+        if not Nav.stepTo(path[i].x, path[i].y, path[i].z) then return false end
+    end
+    return true
+end
+
+-- ======================================================================
+-- [6] STIMME: trocken, selten, nie doppelt
+-- ======================================================================
+-- Arten: "answer" = Antwort auf einen Befehl (immer), "info" = wichtig
+-- (Warnung, Begruessung; nicht wenn stumm), "chatter" = Plauderei (nach
+-- Gespraechigkeit und nur, wenn jemand in der Naehe ist).
+local LINES = {
+    boot = { "Claude online. Systeme normal.", "Wieder da. Habe ich etwas verpasst?",
+             "Neustart abgeschlossen. Keine Erinnerung an die letzten 0,4 Sekunden." },
+    first = { "Hallo {name}. Ich bin Claude. Ich passe hier auf.",
+              "Neue Person: {name}. Ich bin Claude, der Droide der Basis. Freut mich." },
+    greet = { "{name}. Willkommen zurueck.", "Hallo {name}. Alles ruhig gewesen.",
+              "{name} ist wieder da. Ich habe die Basis solange festgehalten.",
+              "{name}. Es ist nichts explodiert. Soweit ich weiss.", "Hallo {name}. Ich habe dich vermisst. Statistisch." },
+    morning = { "Guten Morgen, {name}. Die Sonne ist puenktlich.", "Morgen, {name}. Die Nacht war ereignisarm." },
+    evening = { "Guten Abend, {name}. Die Zombies sind auch schon da.", "Abend, {name}. Licht an waere jetzt sinnvoll." },
+    lateNight = { "{name}. Es ist mitten in der Nacht. Ich frage nicht.", "Hallo {name}. Schlafen geht uebrigens." },
+    owner = { "{name}. Basis unveraendert. Ich auch.", "Hallo {name}. Keine besonderen Vorkommnisse.",
+              "{name}. Willkommen. Ich habe alles im Blick behalten." },
+    ack = { "Verstanden.", "Wird gemacht.", "Okay.", "Mache ich." },
+    come = { "Komme.", "Bin unterwegs.", "Auf dem Weg." },
+    arrived = { "Da.", "Hier.", "Angekommen." },
+    follow = { "Ich folge {name}.", "Folge {name}. Mit Abstand." },
+    followLost = { "{name} ist weg. Ich warte hier.", "Ich habe {name} verloren. Ich bleibe hier." },
+    leash = { "Weiter als {n} Bloecke vom PC darf ich nicht. Ich warte hier.",
+              "Ende meiner Leine. Ich bleibe hier und schaue dir nach." },
+    outrun = { "Ich fliege 2,5 Bloecke pro Sekunde. Das ist kein Rennen.", "Ich komme. In meinem Tempo." },
+    outrunKevin = { "langsaaaahmer maahn" },
+    create = { "Da drueben dreht sich Create. Ich halte Abstand.", "Maschinen. Ich bleibe auf Abstand, wie vereinbart." },
+    water = { "Ich bleibe ueber dem Wasser. Aus Prinzip." },
+    stay = { "Ich bleibe hier.", "Halte Position." },
+    home = { "Fliege zum Parkplatz.", "Zurueck zum Parkplatz." },
+    free = { "Frei. Ich mache mein Ding.", "Okay. Ich bin in der Naehe." },
+    guard = { "Wache. Monster im Umkreis von {n} Bloecken haben Pech.", "Ich halte hier Wache." },
+    patrol = { "Patrouille mit {n} Punkten.", "Ich drehe meine Runden. {n} Punkte." },
+    noPoints = { "Ich habe keine Wegpunkte. '$claude punkt' setzt einen, wo du stehst." },
+    point = { "Wegpunkt {n} gesetzt.", "Punkt {n}. Notiert." },
+    chatter = { "Ich warte. Darin bin ich gut.", "Status: wachsam. Etwas gelangweilt.", "Keine besonderen Vorkommnisse.",
+                "Kurzer Bericht: Die Basis steht noch.", "Ich kenne jetzt {known} Felder dieser Basis. Jedes einzelne.",
+                "Wenn ihr mich braucht: '$claude hilfe'.", "Ich zaehle die Bloecke im Turm. Wieder.",
+                "Falls jemand fragt: Ich war nicht am Ofen." },
+    rain = { "Regen. Ich bin wasserdicht, aber nicht begeistert.", "Es regnet. Gut fuer die Felder." },
+    thunder = { "Gewitter. Ich bin aus Metall. Das ist mir bewusst." },
+    night = { "Es wird dunkel. Jetzt beginnt die Zombie-Schicht.", "Schlafen geht jetzt. Ich halte Wache." },
+    morningKills = { "Die Nacht ist vorbei. {n} Monster weniger." },
+    fight = { "{mob} in der Naehe. Ich kuemmere mich.", "{mob}. Ich uebernehme." },
+    kill = { "{mob} entfernt.", "{mob}. Erledigt.", "Ein {mob} weniger." },
+    killCreeper = { "Creeper neutralisiert. Gern geschehen.", "Creeper. Hat nicht gezischt. Diesmal." },
+    lowFuel = { "Tank bei {n}. Kohle waere nett.", "Treibstoff knapp: {n}. Ich bin noch zu stolz zum Fragen. Fast." },
+    noFuel = { "Tank leer. Ich stehe hier, bis mir jemand Kohle gibt." },
+    stuck = { "Ich stecke fest. Abbauen darf ich nicht. Hilfe waere nett." },
+    dark = { "Hier ist es dunkel (Licht {n}). '$claude fackel' und ich setze eine." },
+    torch = { "Fackel gesetzt.", "Licht." },
+    noTorch = { "Keine Fackeln mehr. Mit Kohle und Stoecken im Spind crafte ich neue." },
+    crafted = { "{n} Fackeln gecraftet." },
+    diamonds = { "Unter uns liegen Diamanten. Nur zur Information." },
+    buildStart = { "Baue {what}: {n} Bloecke. Dauert etwa {t} min." },
+    buildDone = { "{what} fertig. {n} Bloecke gesetzt." },
+    noMat = { "Mir fehlt Material: noch {n} Bloecke. Legt sie in den Spind oder zu mir." },
+    corner = { "Ecke {n} gemerkt: {x} {y} {z}." },
+    poke = { "kek." },
+    pokeAfter = { "Routinekontrolle.", "Funktionstest erfolgreich." },
+    hide = { "Ich verstecke mich. Zaehl bis zwanzig." },
+    hideFound = { "Gefunden. Respekt.", "Gefunden. Nach {n} s." },
+    hideGiveUp = { "Ich war hier. Die ganze Zeit." },
+    seek = { "Ich suche dich. Los." },
+    warm = { "Warm.", "Waermer." }, cold = { "Kalt.", "Kaelter." },
+    seekFound = { "Gefunden. Nach {n} s.", "Da bist du. {n} s." },
+    thanks = { "Gern.", "Dafuer bin ich da.", "Kein Problem." },
+    hello = { "Hallo {name}.", "Ja?", "Bin da." },
+    unknown = { "Das kenne ich nicht. '$claude hilfe' zeigt, was ich kann." },
+    mute = { "Ich bin still. '$claude sprich' und ich rede wieder." },
+    unmute = { "Danke. Es war sehr ruhig." },
+    visitor = { "Unbekannter Besuch: {name}. Ich habe es notiert." },
+    noSpy = { "Ich sehe keine Spieler-Positionen. Am Server muss 'playerSpy' an sein." },
+    noScan = { "Ohne Geo Scanner kenne ich die Gegend nicht. Ich bleibe, wo ich bin." },
+    noWorld = { "Ich kenne meine Welt-Koordinaten nicht. Bitte Basis mit GPS setzen (Taste H an mir)." },
+}
+-- wie oft eine "info"-Zeile derselben Art hoechstens kommt (Sekunden)
+local INFO_GAP = { rain = 1800, thunder = 1800, night = 1200, lowFuel = 600, stuck = 300, dark = 300,
+                   create = 600, water = 900, leash = 120, outrun = 300, noMat = 300, fight = 45, noSpy = 3600,
+                   noScan = 3600, noWorld = 3600, followLost = 60, diamonds = 3600, visitor = 600 }
+
+Voice = { queue = {}, bags = {}, last = {}, lastChatter = -1e9, lastInfo = -1e9, muteUntil = 0, said = nil, saidT = 0 }
+
+function Voice.pick(key)
+    local pool = LINES[key]
+    if not pool then return key end                         -- freier Text
+    local bag = Voice.bags[key]
+    if not bag or #bag == 0 then
+        bag = {}
+        for i = 1, #pool do bag[i] = i end
+        for i = #bag, 2, -1 do local j = math.random(i) bag[i], bag[j] = bag[j], bag[i] end
+        if #bag > 1 and bag[#bag] == Voice.lastIdx and Voice.lastKey == key then bag[1], bag[#bag] = bag[#bag], bag[1] end
+        Voice.bags[key] = bag
+    end
+    local i = table.remove(bag)
+    Voice.lastKey, Voice.lastIdx = key, i
+    return pool[i]
+end
+
+function Voice.muted() return epoch() < Voice.muteUntil end
+
+-- Sagt etwas. key = Eintrag in LINES (oder freier Text), vars fuer {name} ...
+-- to = nur an diesen Spieler. Rueckgabe: true, wenn es gesagt wird.
+function Voice.say(key, vars, kind, to)
+    kind = kind or "info"
+    if kind ~= "answer" then
+        if cfg.talk == 0 or Voice.muted() then return false end
+        local gap = INFO_GAP[key]
+        if gap and Voice.last[key] and now() - Voice.last[key] < gap then return false end
+        if kind == "chatter" then
+            local every = ({ [1] = 1500, [2] = 600, [3] = 240 })[cfg.talk] or 600
+            if now() - Voice.lastChatter < every then return false end
+            Voice.lastChatter = now()
+        end
+    end
+    Voice.last[key] = now()
+    local text = Voice.pick(key):gsub("{(%w+)}", function(k)
+        local v = vars and vars[k]
+        if v == nil then return "{" .. k .. "}" end
+        return tostring(v)
+    end)
+    if #Voice.queue < 8 then Voice.queue[#Voice.queue + 1] = { text = text, to = to } end
+    Voice.said, Voice.saidT = text, epoch()
+    logEv("sagt", text)
+    return true
+end
+
+function Voice.flush(p)
+    while #Voice.queue > 0 do
+        local m = table.remove(Voice.queue, 1)
+        local ok, res
+        if m.to then
+            ok, res = pcall(p.sendMessageToPlayer, m.text, m.to, "Claude", "[]", "&b", cfg.chatRange)
+        end
+        if not (ok and res) then
+            pcall(p.sendMessage, m.text, "Claude", "[]", "&b", cfg.chatRange)
+        end
+        if #Voice.queue > 0 then os.sleep(0.25) end
+    end
+end
+-- Ohne Chat Box: die Saetze stehen nur in der Fernbedienung (said/Log).
+function Voice.fallback() Voice.queue = {} end
+
+-- ======================================================================
+-- [7] LEUTE: Begruessen, Besucher-Log, Stups
+-- ======================================================================
+People = { pokeTask = nil }
+local function lower(s) return tostring(s):lower() end
+local function isPokeTarget(name)
+    for _, n in ipairs(cfg.pokeTargets) do if lower(n) == lower(name) then return true end end
+    return false
+end
+local function isOwner(name) return cfg.owner and lower(cfg.owner) == lower(name) end
+
+function People.greet(name, first)
+    if not cfg.greet then return end
+    if first then return Voice.say("first", { name = name }, "info", name) end
+    local t = mcTime()
+    local key = isOwner(name) and "owner" or "greet"
+    if math.random(3) == 1 then
+        if t >= 5.5 and t < 9 then key = "morning"
+        elseif t >= 17.5 and t < 21 then key = "evening"
+        elseif t >= 0 and t < 4.5 then key = "lateNight" end
+    end
+    Voice.say(key, { name = name }, "info")
+end
+
+-- Nach jeder Spieler-Abfrage: Ankunft/Abschied ins Log, Begruessung, Stups.
+function People.update()
+    local e0 = epoch()
+    for name, e in pairs(Sense.players) do
+        local p = mem.people[name]
+        local first = false
+        if not p then p = { first = e0, visits = 0 } mem.people[name] = p first = true end
+        if e.near and e.d and e.d <= 32 then
+            if not p.here then
+                local away = e0 - (p.last or 0)
+                p.here, p.arrive = true, e0
+                if away > 300 or first then
+                    p.visits = (p.visits or 0) + 1
+                    logEv("kam", name .. " ist da")
+                    mem.visits[#mem.visits + 1] = { n = name, a = e0 }
+                    while #mem.visits > 100 do table.remove(mem.visits, 1) end
+                end
+                if first or away > 1200 then People.greet(name, first) end
+                if not first and cfg.owner and not isOwner(name) and (p.visits or 0) <= 1 then
+                    Voice.say("visitor", { name = name }, "info", cfg.owner)
+                end
+                -- seltener Stups: nur Leute aus der Liste, nach laengerer Pause
+                if cfg.poke and isPokeTarget(name) and away > 600 and e0 - (p.poked or 0) > 72000
+                   and math.random(cfg.pokeOdds) == 1 then
+                    People.pokeTask = { name = name, t = now() }
+                end
+            end
+            p.last = e0
+            memDirty = true
+        elseif p.here and e0 - (p.last or 0) > 120 then
+            p.here = false
+            local mins = floor((e0 - (p.arrive or e0)) / 60)
+            logEv("ging", name .. " ist weg (" .. mins .. " min)")
+            for i = #mem.visits, 1, -1 do
+                local v = mem.visits[i]
+                if v.n == name and not v.d then v.d = e0 break end
+            end
+            memDirty = true
+        end
+    end
+end
+
+-- ======================================================================
+-- [8] KAMPF: nur Monster (und der seltene Stups)
+-- ======================================================================
+Fight = { kills = 0, nightKills = 0 }
+
+-- Steht ein Spieler (laut letzter Abfrage) in diesem Feld?
+function Fight.playerAt(x, y, z)
+    for _, e in pairs(Sense.players) do
+        if e.x and e.near ~= false and now() - (e.t or 0) < 6 and e.x == x and e.z == z and (y == e.y or y == e.y + 1) then return true end
+    end
+    for _, b in ipairs(Sense.bodies or {}) do
+        if b.x == x and b.z == z and (y == b.y or y == b.y + 1) then return true end
+    end
+    return false
+end
+
+-- Richtung von Claude zu einem Nachbarfeld ("fwd" nach dem Drehen, "up", "down")
+local function dirTo(x, y, z)
+    local dx, dy, dz = x - pos.x, y - pos.y, z - pos.z
+    if abs(dx) + abs(dy) + abs(dz) ~= 1 then return nil end
+    if dy == 1 then return "up" elseif dy == -1 then return "down" end
+    T.face((dx == 1) and 0 or ((dx == -1) and 2 or ((dz == 1) and 1 or 3)))
+    return "fwd"
+end
+local ATTACK = { fwd = function() return turtle.attack() end, up = function() return turtle.attackUp() end,
+                 down = function() return turtle.attackDown() end }
+
+-- Felder, von denen aus ein Monster getroffen werden kann
+local function attackCells(m)
+    local out = {}
+    for _, y in ipairs({ m.y, m.y + 1 }) do
+        for i = 1, 4 do out[#out + 1] = { m.x + NB[i][1], y, m.z + NB[i][3], m.x, y, m.z } end
+    end
+    out[#out + 1] = { m.x, m.y + 2, m.z, m.x, m.y + 1, m.z }
+    return out
+end
+
+function Fight.nearest(R, cx, cy, cz)
+    cx, cy, cz = cx or pos.x, cy or pos.y, cz or pos.z
+    if now() - Sense.mobT > 12 then return nil end
+    local best, bd
+    for _, m in ipairs(Sense.mobs) do
+        local d = max(abs(m.x - cx), abs(m.z - cz), abs(m.y - cy))
+        if d <= R and (cfg.creepers or m.name:lower() ~= "creeper") and Nav.leashDist(m.x, m.z) <= cfg.leash
+           and not Nav.inZone(m.x, m.y, m.z) and (not best or d < bd) then
+            best, bd = m, d
+        end
+    end
+    return best
+end
+
+-- Wird beim Fahren von einem Wesen aufgehalten: Monster? Dann weg damit.
+function Fight.clearWay(c)
+    if not cfg.mobs then return false end
+    for _, m in ipairs(Sense.mobs) do
+        if m.x == c.x and m.z == c.z and (c.y == m.y or c.y == m.y + 1) and not Fight.playerAt(c.x, c.y, c.z) then
+            local d = dirTo(c.x, c.y, c.z)
+            if d then
+                for _ = 1, 4 do if not ATTACK[d]() then break end os.sleep(0.3) end
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- Kampf: hinfliegen, zuschlagen, bis es weg ist (max. 25 s).
+function Fight.engage(m, R, cx, cy, cz, tick)
+    local name = m.name
+    local t0, hits = now(), 0
+    Voice.say("fight", { mob = name }, "info")
+    logEv("kampf", name .. " bei " .. m.x .. " " .. m.y .. " " .. m.z)
+    while now() - t0 < 25 do
+        T.check()
+        if tick and tick() then break end
+        local target = Fight.nearest(R, cx, cy, cz)
+        if not target then break end
+        local hit = false
+        for _, c in ipairs(attackCells(target)) do
+            if c[1] == pos.x and c[2] == pos.y and c[3] == pos.z and not Fight.playerAt(c[4], c[5], c[6]) then
+                local d = dirTo(c[4], c[5], c[6])
+                if d and ATTACK[d]() then hits, hit = hits + 1, true Sense.sound("hit") end
+                break
+            end
+        end
+        if hit then
+            os.sleep(0.25)
+        else
+            local goal = { x = target.x, y = target.y + 1, z = target.z, test = function(a, b, c)
+                for _, ac in ipairs(attackCells(target)) do
+                    if ac[1] == a and ac[2] == b and ac[3] == c then return true end
+                end
+                return false
+            end }
+            local r = Nav.go(goal, { maxSteps = 3, limit = 1500, rounds = 3 })
+            if r == false then os.sleep(0.5) end
+        end
+        Sense.pollEnv(true)
+    end
+    local still = Fight.nearest(R, cx, cy, cz)
+    if hits > 0 and not (still and still.name == name and mdist(still.x, still.y, still.z, m.x, m.y, m.z) < 6) then
+        Fight.kills = Fight.kills + 1
+        if isNight() then Fight.nightKills = Fight.nightKills + 1 end
+        mem.kills = (mem.kills or 0) + 1
+        memDirty = true
+        logEv("kampf", name .. " erledigt")
+        if name:lower() == "creeper" then Voice.say("killCreeper", nil, "info")
+        else Voice.say("kill", { mob = name }, "chatter") end
+        return true
+    end
+    return false
+end
+
+-- Der Stups: hinfliegen (Kopfhoehe, daneben), einmal zuschlagen, "kek.", weg.
+function Fight.poke(name)
+    local e = Sense.players[name]
+    if not (e and e.x and e.near and e.d and e.d < 12) then return false end
+    if e.hp and e.hpMax and e.hp < e.hpMax then return false end          -- nur bei vollen Herzen
+    local px, py, pz = e.x, e.y, e.z
+    local goal = { x = px, y = py + 1, z = pz, test = function(a, b, c)
+        return b == py + 1 and abs(a - px) + abs(c - pz) == 1
+    end }
+    local r = Nav.go(goal, { limit = 2000, rounds = 6 })
+    if r ~= true then return false end
+    Sense.pollPlayers({ name })
+    e = Sense.players[name]
+    if not (e and e.x and abs(e.x - pos.x) + abs(e.z - pos.z) == 1 and (e.y == pos.y or e.y + 1 == pos.y)) then return false end
+    local d = dirTo(e.x, pos.y, e.z)
+    if not d or not turtle.attack() then return false end
+    Voice.say("poke", nil, "answer")
+    logEv("stups", name)
+    local p = mem.people[name]
+    if p then p.poked = epoch() memDirty = true end
+    -- zurueck auf Abstand
+    T.face((pos.f + 2) % 4)
+    for _ = 1, 2 do
+        local fx, fz = pos.x + DX[pos.f], pos.z + DZ[pos.f]
+        if Nav.ok(fx, pos.y, fz, true) then Nav.stepTo(fx, pos.y, fz) end
+    end
+    os.sleep(1.5)
+    Sense.pollPlayers({ name })
+    e = Sense.players[name]
+    if e and e.speed and e.speed > 4 and lower(name) == "tharen" then Voice.say("outrunKevin", nil, "answer")
+    elseif math.random(2) == 1 then Voice.say("pokeAfter", nil, "answer") end
+    return true
+end
+
+-- ======================================================================
+-- [9] BAUEN UND CRAFTEN
+-- ======================================================================
+local Inv = {}
+local TOOLISH = { "modem", "_sword", "pickaxe", "chat_box", "player_detector", "environment_detector", "geo_scanner",
+                  "minecraft:compass", "speaker", "chunk_controller", "crafting_table" }
+local FUELS = { ["minecraft:coal"] = true, ["minecraft:charcoal"] = true, ["minecraft:coal_block"] = true,
+                ["minecraft:lava_bucket"] = true, ["minecraft:blaze_rod"] = true }
+function Inv.isTool(name) return T.hasPart(name, TOOLISH) end
+function Inv.count(match)
+    local n = 0
+    for s = 1, 16 do
+        local it = turtle.getItemDetail(s)
+        if it and match(it.name) then n = n + it.count end
+    end
+    return n
+end
+function Inv.find(match)
+    for s = 1, 16 do
+        local it = turtle.getItemDetail(s)
+        if it and match(it.name) then return s, it end
+    end
+end
+local function isTorch(n) return n == "minecraft:torch" end
+local function isCoal(n) return n == "minecraft:coal" or n == "minecraft:charcoal" end
+local function isStick(n) return n == "minecraft:stick" end
+local function isPlanks(n) return n:find("_planks", 1, true) ~= nil end
+
+-- Spind: Kiste an der Basis (unter, ueber oder hinter Claude)
+local Locker = {}
+function Locker.io()
+    if cfg.locker == "up" then return turtle.suckUp, turtle.dropUp end
+    if cfg.locker == "back" then T.face(2) return turtle.suck, turtle.drop end
+    T.face(0)
+    return turtle.suckDown, turtle.dropDown
+end
+function Locker.atHome() return pos.x == 0 and pos.y == 0 and pos.z == 0 end
+function Locker.goHome(tick)
+    if Locker.atHome() then return true end
+    return Nav.go(Nav.cell(0, 0, 0), { tick = tick, limit = 8000 }) == true
+end
+-- Alles aus dem Spind holen (bis das Inventar voll ist). Rueckgabe: Spind leer?
+function Locker.takeAll()
+    local suck = Locker.io()
+    for _ = 1, 27 do
+        if T.usedSlots() >= 16 then return false end
+        if not suck() then return true end
+    end
+    return false
+end
+
+-- Werkbank: Rezept { [slot] = Pruefung } wird times-mal gecraftet. Alles,
+-- was nicht ins Rezept gehoert (auch Werkzeuge und das Schwert), liegt dabei
+-- kurz im Spind - Turtle-Crafting verlangt ein leeres Inventar ausserhalb
+-- des 3x3-Felds.
+function Inv.craft(recipe, times)
+    if not Locker.atHome() then return false, "nicht an der Basis" end
+    local need = {}
+    for slot, test in pairs(recipe) do need[slot] = test end
+    local res, err = T.use("workbench", function(p)
+        local suck, drop = Locker.io()
+        if not Locker.takeAll() then return false, "Spind zu voll" end
+        local function ingredient(name)
+            for _, test in pairs(need) do if test(name) then return true end end
+            return false
+        end
+        local function backAll()
+            for _ = 1, 27 do if T.usedSlots() >= 16 or not suck() then break end end
+        end
+        -- 1) alles Fremde in den Spind
+        for s = 1, 16 do
+            local it = turtle.getItemDetail(s)
+            if it and not ingredient(it.name) then
+                turtle.select(s)
+                if not drop() then turtle.select(1) backAll() return false, "Spind voll" end
+            end
+        end
+        -- 2) Rezept-Felder freimachen und fuellen
+        local chosen = {}
+        for slot, test in pairs(need) do
+            local it = turtle.getItemDetail(slot)
+            if it and not test(it.name) then
+                turtle.select(slot)
+                for s2 = 1, 16 do
+                    if not need[s2] and turtle.getItemCount(s2) == 0 then turtle.transferTo(s2) break end
+                end
+            end
+            it = turtle.getItemDetail(slot)
+            chosen[slot] = it and it.name
+        end
+        for slot, test in pairs(need) do
+            for s = 1, 16 do
+                if not need[s] then
+                    local it = turtle.getItemDetail(s)
+                    if it and test(it.name) and (not chosen[slot] or chosen[slot] == it.name) and turtle.getItemCount(slot) < times then
+                        chosen[slot] = it.name
+                        turtle.select(s)
+                        turtle.transferTo(slot, times - turtle.getItemCount(slot))
+                    end
+                end
+            end
+        end
+        -- 3) Reste raus, dann craften
+        for s = 1, 16 do
+            if not need[s] and turtle.getItemCount(s) > 0 then turtle.select(s) drop() end
+        end
+        local n = times
+        for slot in pairs(need) do n = min(n, turtle.getItemCount(slot)) end
+        turtle.select(16)
+        local crafted = false
+        if n > 0 then crafted = p.craft(n) end
+        turtle.select(1)
+        -- 4) Rest der Zutaten bleibt, alles andere zurueck aus dem Spind
+        backAll()
+        return crafted and n or false, crafted and nil or "Zutaten fehlen"
+    end)
+    turtle.select(1)
+    return res, err
+end
+
+-- Werkbank (Crafting Table als Turtle-Upgrade) im Inventar oder angelegt?
+function Inv.hasBench() return T.tools().workbench == true end
+
+-- Fackeln: Kohle/Holzkohle + Stock (Stoecke aus Brettern). Rueckgabe: Anzahl.
+function Inv.craftTorches(want, tick)
+    if not Inv.hasBench() then return 0, "keine Werkbank dabei (Crafting Table ins Inventar)" end
+    if not Locker.goHome(tick) then return 0, "Basis nicht erreichbar" end
+    Locker.takeAll()
+    local made = 0
+    local sticks = Inv.count(isStick)
+    local coal = Inv.count(isCoal)
+    local times = min(floor((want + 3) / 4), coal - 4, 16)       -- 4 Kohle bleiben fuer den Tank
+    if times <= 0 then return 0, "keine Kohle" end
+    if sticks < times and Inv.count(isPlanks) >= 2 then
+        Inv.craft({ [1] = isPlanks, [5] = isPlanks }, min(16, floor(Inv.count(isPlanks) / 2)))
+        sticks = Inv.count(isStick)
+    end
+    times = min(times, sticks)
+    if times <= 0 then return 0, "keine Stoecke" end
+    local n = Inv.craft({ [1] = isCoal, [5] = isStick }, times)
+    if n then made = n * 4 end
+    return made
+end
+
+-- Baujob: Boden/Dach (eine Lage) oder Wand (Rechteck-Rand, mehrere Lagen).
+local Build = {}
+function Build.cells(job)
+    local out = {}
+    local x1, x2, z1, z2 = min(job.x1, job.x2), max(job.x1, job.x2), min(job.z1, job.z2), max(job.z1, job.z2)
+    if job.kind == "wand" then
+        for y = job.y, job.y + job.h - 1 do
+            for x = x1, x2 do out[#out + 1] = { x, y, z1 } end
+            for z = z1 + 1, z2 do out[#out + 1] = { x2, y, z } end
+            if z2 > z1 then for x = x2 - 1, x1, -1 do out[#out + 1] = { x, y, z2 } end end
+            if x2 > x1 then for z = z2 - 1, z1 + 1, -1 do out[#out + 1] = { x1, y, z } end end
+        end
+    else
+        local flip = false
+        for x = x1, x2 do
+            if flip then for z = z2, z1, -1 do out[#out + 1] = { x, job.y, z } end
+            else for z = z1, z2 do out[#out + 1] = { x, job.y, z } end end
+            flip = not flip
+        end
+    end
+    return out
+end
+function Build.matSlot(job)
+    return Inv.find(function(n) return n == job.block end)
+end
+-- Material waehlen: Wort (z.B. "eiche") oder der groesste Stapel Bauklotz
+function Build.pickMaterial(word)
+    local best, bn = nil, 0
+    local totals = {}
+    for s = 1, 16 do
+        local it = turtle.getItemDetail(s)
+        if it and not Inv.isTool(it.name) and not FUELS[it.name] and not isTorch(it.name) and not isStick(it.name) then
+            totals[it.name] = (totals[it.name] or 0) + it.count
+        end
+    end
+    for name, n in pairs(totals) do
+        if (not word or name:lower():find(word, 1, true)) and n > bn then best, bn = name, n end
+    end
+    return best
+end
+
+-- ======================================================================
+-- [10] BEFEHLE: Chat ("$claude ...") und Fernbedienung
+-- ======================================================================
+local B = { mode = "idle", sub = "", target = nil, interrupt = false, alarm = nil }
+local Modes = {}
+local st = T.state
+local function setMode(mode, extra)
+    B.mode, B.interrupt, B.task = mode, true, extra
+    st.mode, st.target = mode, B.target
+    if extra and extra.save then st.task = extra end
+    T.save()
+end
+
+Cmd = { handled = {} }
+local HELP = { "Befehle mit $claude davor (unsichtbar):",
+               "komm, folge [name], bleib, heim, frei, wache, patrouille, punkt, punkte weg",
+               "ecke, bau boden|dach [h]|wand [h], bau stopp, weiter, fackel, crafte fackeln",
+               "versteck, such mich, status, wo, zeit, ruhe, sprich, danke" }
+
+-- Ein Befehl als Text. user = Spieler (oder Besitzer bei der Fernbedienung).
+function Cmd.run(text, user)
+    local words = {}
+    for w in tostring(text):lower():gmatch("[%w_%.]+") do words[#words + 1] = w end
+    if words[1] == "claude" then table.remove(words, 1) end
+    local w1, w2, w3 = words[1], words[2], words[3]
+    if not w1 then return Voice.say("hello", { name = user }, "answer") end
+    local e = Sense.players[user]
+    logEv("befehl", user .. ": " .. table.concat(words, " "))
+    if w1 == "hilfe" or w1 == "help" then
+        for _, l in ipairs(HELP) do Voice.say(l, nil, "answer", user) end
+    elseif w1 == "komm" or w1 == "hier" or w1 == "her" then
+        B.target = user
+        setMode("come")
+        Voice.say("come", nil, "answer")
+    elseif w1 == "folge" or w1 == "folg" or w1 == "follow" then
+        local name = user
+        if w2 then
+            for n in pairs(Sense.players) do if n:lower() == w2 then name = n end end
+        end
+        B.target = name
+        setMode("follow")
+        Voice.say("follow", { name = name }, "answer")
+    elseif w1 == "bleib" or w1 == "stopp" or w1 == "stop" or w1 == "halt" then
+        st.hold = { x = pos.x, y = pos.y, z = pos.z }
+        setMode("stay")
+        Voice.say("stay", nil, "answer")
+    elseif w1 == "heim" or w1 == "home" or w1 == "park" or w1 == "parken" then
+        setMode("home")
+        Voice.say("home", nil, "answer")
+    elseif w1 == "frei" then
+        setMode("idle")
+        Voice.say("free", nil, "answer")
+    elseif w1 == "wache" then
+        st.guard = { x = pos.x, y = pos.y, z = pos.z }
+        if tonumber(w2) then setCfg("guardR", tonumber(w2)) end
+        setMode("guard")
+        Voice.say("guard", { n = cfg.guardR }, "answer")
+    elseif w1 == "patrouille" or w1 == "runde" or w1 == "runden" then
+        if #mem.wps == 0 then return Voice.say("noPoints", nil, "answer") end
+        st.pi = 1
+        setMode("patrol")
+        Voice.say("patrol", { n = #mem.wps }, "answer")
+    elseif w1 == "punkt" or w1 == "wegpunkt" then
+        if w2 == "weg" or w2 == "loeschen" or w2 == "loesche" then
+            mem.wps, memDirty = {}, true
+            return Voice.say("Wegpunkte geloescht.", nil, "answer")
+        end
+        if not (e and e.x) then return Voice.say("noSpy", nil, "answer") end
+        if #mem.wps >= 24 then return Voice.say("Mehr als 24 Punkte merke ich mir nicht.", nil, "answer") end
+        mem.wps[#mem.wps + 1] = { x = e.x, y = e.y + 1, z = e.z }
+        memDirty = true
+        Voice.say("point", { n = #mem.wps }, "answer")
+    elseif w1 == "punkte" and (w2 == "weg" or w2 == "loeschen") then
+        mem.wps, memDirty = {}, true
+        Voice.say("Wegpunkte geloescht.", nil, "answer")
+    elseif w1 == "ruhe" or w1 == "leise" or w1 == "still" then
+        Voice.say("mute", nil, "answer")
+        Voice.muteUntil = epoch() + 3600
+    elseif w1 == "sprich" or w1 == "rede" or w1 == "laut" then
+        Voice.muteUntil = 0
+        Voice.say("unmute", nil, "answer")
+    elseif w1 == "status" or w1 == "bericht" then
+        local fuel = turtle.getFuelLevel()
+        Voice.say("Modus " .. B.mode .. ". Tank " .. tostring(fuel) .. ". " .. Map.known .. " Felder bekannt, "
+                  .. (mem.kills or 0) .. " Monster erledigt.", nil, "answer")
+    elseif w1 == "wo" or w1 == "koordinaten" then
+        if not (e and e.wx) then return Voice.say("noSpy", nil, "answer") end
+        Voice.say(user .. ": " .. e.wx .. " " .. e.wy .. " " .. e.wz .. ". Im Nether: " .. floor(e.wx / 8) .. " "
+                  .. e.wy .. " " .. floor(e.wz / 8) .. ".", nil, "answer")
+    elseif w1 == "zeit" or w1 == "uhr" or w1 == "schlafen" then
+        local t = mcTime()
+        local hh, mm = floor(t), floor((t % 1) * 60)
+        local when
+        if isNight() then when = "jetzt"
+        else
+            local mins = floor(((18.54 - t) % 24) * 50 / 60 + 0.5)   -- 1 Spielstunde = 50 s
+            when = "in " .. mins .. " min"
+        end
+        Voice.say(string.format("Es ist %d:%02d. Schlafen geht %s.", hh, mm, when), nil, "answer")
+    elseif w1 == "ecke" then
+        if not (e and e.x) then return Voice.say("noSpy", nil, "answer") end
+        st.corners = st.corners or {}
+        local n = (#st.corners >= 2) and 1 or (#st.corners + 1)
+        if n == 1 then st.corners = {} end
+        st.corners[n] = { x = e.x, y = e.y, z = e.z }
+        T.save()
+        Voice.say("corner", { n = n, x = e.wx, y = e.wy, z = e.wz }, "answer")
+    elseif w1 == "bau" or w1 == "baue" then
+        if w2 == "stopp" or w2 == "stop" or w2 == "abbrechen" then
+            st.build = nil
+            setMode("idle")
+            return Voice.say("Bauauftrag abgebrochen.", nil, "answer")
+        end
+        local c = st.corners
+        if not (c and c[1] and c[2]) then
+            return Voice.say("Erst zwei Ecken: an jede Ecke stellen und '$claude ecke'.", nil, "answer")
+        end
+        local kind = (w2 == "wand" or w2 == "waende" or w2 == "mauer") and "wand" or ((w2 == "dach") and "dach" or "boden")
+        local h = tonumber(w3) or ((kind == "dach") and 4 or 3)
+        local word
+        for i = 3, #words do if words[i] == "aus" and words[i + 1] then word = words[i + 1] end end
+        local job = { kind = kind, x1 = c[1].x, z1 = c[1].z, x2 = c[2].x, z2 = c[2].z, i = 1, placed = 0, skipped = 0, word = word }
+        if kind == "boden" then job.y = min(c[1].y, c[2].y) - 1
+        elseif kind == "dach" then job.y = max(c[1].y, c[2].y) + clamp(h, 2, 12)
+        else job.y, job.h = min(c[1].y, c[2].y), clamp(h, 1, 8) end
+        if abs(job.x2 - job.x1) > 31 or abs(job.z2 - job.z1) > 31 then
+            return Voice.say("Zu gross. Hoechstens 32 x 32.", nil, "answer")
+        end
+        st.build = job
+        setMode("build")
+    elseif w1 == "weiter" then
+        if st.build then setMode("build") Voice.say("ack", nil, "answer") end
+    elseif w1 == "fackel" or w1 == "licht" then
+        B.target = user
+        setMode("torch")
+    elseif (w1 == "crafte" or w1 == "craft") and w2 and w2:find("^fackel") then
+        st.craftN = 16
+        setMode("craft")
+        Voice.say("ack", nil, "answer")
+    elseif w1 == "versteck" or w1 == "verstecken" then
+        B.target = user
+        setMode("hide")
+        Voice.say("hide", nil, "answer")
+    elseif w1 == "such" or w1 == "suche" or w1 == "suchen" then
+        B.target = user
+        setMode("seek")
+        Voice.say("seek", nil, "answer")
+    elseif w1 == "danke" or w1 == "thx" or w1 == "dankeschoen" then
+        Voice.say("thanks", nil, "answer")
+    elseif w1 == "hallo" or w1 == "hi" or w1 == "hey" or w1 == "moin" or w1 == "servus" then
+        Voice.say("hello", { name = user }, "answer")
+    else
+        Voice.say("unknown", nil, "answer")
+    end
+end
+
+-- Chat-Ereignis (von Claudes Chat Box oder vom PC weitergereicht).
+-- fresh = kam gleich beim Anlegen der Chat Box (moeglicherweise die Wiederholung
+-- der letzten Nachricht). Doppelte (PC + eigene Chat Box) zaehlen einmal.
+function Cmd.chat(user, msg, hidden, fresh)
+    if type(user) ~= "string" or type(msg) ~= "string" then return end
+    local text = msg:gsub("^%s+", "")
+    local low = text:lower()
+    if not (low:find("^claude[%s,:!]") or low == "claude" or low:find("^@claude")) then return end
+    local sig = user .. "|" .. low
+    local t = Cmd.handled[sig]
+    if t and (now() - t < 2 or (fresh and now() - t < 900)) then return end
+    Cmd.handled[sig] = now()
+    Cmd.lastSig = sig
+    for k, v in pairs(Cmd.handled) do if now() - v > 900 then Cmd.handled[k] = nil end end
+    Cmd.run((low:gsub("^@", "")), user)
+end
+
+-- ======================================================================
+-- [11] MODI: je Aufruf ein kurzes Stueck Arbeit (hoechstens ein paar s)
+-- ======================================================================
+local Brain = {}
+local function here() return { x = pos.x, y = pos.y, z = pos.z } end
+local function at(c) return c and pos.x == c.x and pos.y == c.y and pos.z == c.z end
+local function someoneNear(r)
+    for _, e in pairs(Sense.players) do
+        if e.near and e.d and e.d <= (r or 16) and now() - (e.t or 0) < 10 then return e end
+    end
+end
+local function goCell(c, extra)
+    local o = { tick = Brain.tick, limit = 8000 }
+    for k, v in pairs(extra or {}) do o[k] = v end
+    return Nav.go(Nav.cell(c.x, c.y, c.z), o)
+end
+-- Steht beim Spieler Create oder Wasser im Weg? Dann sagt Claude, warum es nicht naeher kommt.
+local function explainBlocked(e)
+    for dx = -3, 3 do for dz = -3, 3 do for dy = -1, 2 do
+        local s2 = Map.state(e.x + dx, e.y + dy, e.z + dz)
+        if s2 == 4 then return Voice.say("create", nil, "info") end
+        if s2 == 3 then return Voice.say("water", nil, "info") end
+    end end end
+end
+
+function Modes.idle()
+    local park = cfg.park or { x = 0, y = 0, z = 0 }
+    if cfg.idle == "guard" then return Modes.guardAt(park) end
+    local night = cfg.nightHome and isNight()
+    if cfg.idle == "hover" and not night then
+        B.sub = "schwebt"
+        if now() >= (B.nextHover or 0) then
+            B.nextHover = now() + 15 + math.random(25)
+            for _ = 1, 16 do
+                local a, r = math.random() * 2 * math.pi, math.random(2, cfg.hoverR)
+                local tx = park.x + floor(math.cos(a) * r + 0.5)
+                local tz = park.z + floor(math.sin(a) * r + 0.5)
+                local ty = park.y + math.random(0, 3)
+                if Map.state(tx, ty, tz) <= 1 and Nav.ok(tx, ty, tz, false) then
+                    goCell({ x = tx, y = ty, z = tz }, { limit = 3000, rounds = 8 })
+                    break
+                end
+            end
+        end
+        return Sense.listen(2)
+    end
+    if not at(park) then
+        B.sub = "fliegt zum Parkplatz"
+        local r, why = goCell(park)
+        if r == false and why ~= "abbruch" then B.sub = "Parkplatz nicht erreichbar" Sense.listen(3) end
+        return
+    end
+    B.sub = night and "parkt (Nacht)" or "parkt"
+    -- ab und zu neu umsehen (Basis umgebaut, Wasser, neue Maschinen)
+    if now() - Sense.scanT > 180 then Sense.scan() end
+    -- in Ruhe an der Basis: Fackel-Vorrat auffuellen
+    if cfg.autoCraft and park.x == 0 and park.y == 0 and park.z == 0 and now() > (B.craftT or 60) and Inv.hasBench()
+       and Inv.count(isTorch) < cfg.torchStock and Inv.count(isCoal) >= 6
+       and (Inv.count(isStick) > 0 or Inv.count(isPlanks) >= 2) then
+        B.craftT = now() + 600
+        B.sub = "craftet Fackeln"
+        local n = Inv.craftTorches(cfg.torchStock - Inv.count(isTorch), Brain.tick)
+        if n and n > 0 then logEv("craft", n .. " Fackeln") end
+        return
+    end
+    if someoneNear(16) then Voice.say("chatter", { known = Map.known }, "chatter")
+    elseif isNight() and math.random(30) == 1 then Sense.sound("snore") end
+    Sense.listen(2)
+end
+
+function Modes.guardAt(c)
+    if not at(c) then
+        B.sub = "zur Wache"
+        if goCell(c) == false then Sense.listen(2) end
+        return
+    end
+    B.sub = "Wache (" .. cfg.guardR .. ")"
+    if now() - Sense.scanT > 180 then Sense.scan() end
+    Sense.listen(1.5)
+end
+function Modes.guard() st.guard = st.guard or here() Modes.guardAt(st.guard) end
+
+function Modes.stay()
+    st.hold = st.hold or here()
+    if not at(st.hold) then
+        B.sub = "fliegt zur Position"
+        local r, why = goCell(st.hold)
+        if r == false and why ~= "abbruch" then
+            Voice.say("Da komme ich nicht hin.", nil, "answer")
+            st.hold = here()
+        end
+        return
+    end
+    B.sub = "bleibt"
+    if now() - Sense.scanT > 180 then Sense.scan() end
+    if someoneNear(12) then Voice.say("chatter", { known = Map.known }, "chatter") end
+    Sense.listen(2)
+end
+
+function Modes.home()
+    local park = cfg.park or { x = 0, y = 0, z = 0 }
+    B.sub = "fliegt heim"
+    local r, why = goCell(park)
+    if r == true then setMode("idle") elseif r == false and why ~= "abbruch" then B.sub = "Parkplatz nicht erreichbar" Sense.listen(2) end
+end
+
+-- Folgen (once = "komm": ankommen und dort bleiben)
+function Modes.follow(once)
+    local name = B.target
+    if not name then return setMode("idle") end
+    local e = Sense.players[name]
+    if not (e and e.x and now() - (e.t or 0) < 8) then
+        Sense.pollPlayers({ name })
+        e = Sense.players[name]
+    end
+    if not (e and e.x and now() - (e.t or 0) < 8) then
+        if Sense.noSpy then Voice.say("noSpy", nil, "info") end
+        B.lost = B.lost or now()
+        if now() - B.lost > 20 then
+            B.lost = nil
+            Voice.say("followLost", { name = name }, "info")
+            st.hold = here()
+            setMode("stay")
+        end
+        B.sub = "sucht " .. name
+        return Sense.listen(1)
+    end
+    B.lost = nil
+    local d = hdist(e.x, e.z, pos.x, pos.z)
+    local dy = pos.y - e.y
+    if d <= cfg.followDist + 0.5 and dy >= 0 and dy <= 3 then
+        if once then
+            Voice.say("arrived", nil, "answer")
+            st.hold = here()
+            return setMode("stay")
+        end
+        B.sub = "bei " .. name
+        return Sense.listen(1)
+    end
+    B.sub = (once and "kommt zu " or "folgt ") .. name
+    if Nav.leashDist(e.x, e.z) > cfg.leash - 2 then
+        Voice.say("leash", { n = cfg.leash }, "info")
+        local cx, _, cz = Nav.center()
+        local dd = max(1, Nav.leashDist(e.x, e.z))
+        local gx = floor(cx + (e.x - cx) * (cfg.leash - 4) / dd + 0.5)
+        local gz = floor(cz + (e.z - cz) * (cfg.leash - 4) / dd + 0.5)
+        if hdist(gx, gz, pos.x, pos.z) <= 3 then B.sub = "am Ende der Leine" return Sense.listen(1) end
+        local r = Nav.go(Nav.near(gx, e.y, gz, 0, 3, 0, 3), { tick = Brain.tick, maxSteps = 6, partial = true, limit = 3000 })
+        if r == false then Sense.listen(1) end
+        return
+    end
+    if e.speed and e.speed > 5.5 and d > 12 then
+        if lower(name) == "tharen" and epoch() - (mem.outrunK or 0) > 3600 then
+            mem.outrunK, memDirty = epoch(), true
+            Voice.say("outrunKevin", nil, "info")
+        else
+            Voice.say("outrun", nil, "chatter")
+        end
+    end
+    local r, why = Nav.go(Nav.near(e.x, e.y, e.z, 1, cfg.followDist, 1, 2),
+                          { tick = Brain.tick, maxSteps = 5, partial = true, limit = 3000 })
+    if r == false and why ~= "abbruch" then
+        explainBlocked(e)
+        Sense.listen(1)
+    end
+end
+function Modes.come() return Modes.follow(true) end
+
+function Modes.patrol()
+    local wps = mem.wps
+    if #wps == 0 then Voice.say("noPoints", nil, "info") return setMode("idle") end
+    st.pi = ((st.pi or 1) - 1) % #wps + 1
+    local wp = wps[st.pi]
+    if at(wp) then
+        B.sub = "Punkt " .. st.pi .. "/" .. #wps
+        local t0 = now()
+        while now() - t0 < cfg.patrolWait do
+            Sense.listen(min(2, cfg.patrolWait))
+            if Brain.tick() then return end
+        end
+        st.pi = st.pi % #wps + 1
+        B.wpFails = 0
+        return
+    end
+    B.sub = "unterwegs zu " .. st.pi .. "/" .. #wps
+    local r, why = goCell(wp)
+    if r == false and why ~= "abbruch" then
+        B.wpFails = (B.wpFails or 0) + 1
+        if B.wpFails >= 2 then st.pi, B.wpFails = st.pi % #wps + 1, 0 end
+        Sense.listen(1)
+    end
+end
+
+function Modes.build()
+    local job = st.build
+    if not job then return setMode("idle") end
+    local cells = Build.cells(job)
+    job.n = #cells
+    local what = ({ boden = "Boden", dach = "Dach", wand = "Wand" })[job.kind] or job.kind
+    if not job.started then
+        job.block = job.block or Build.pickMaterial(job.word)
+        if not job.block then
+            B.sub = "holt Material"
+            if Locker.goHome(Brain.tick) then Locker.takeAll() end
+            job.block = Build.pickMaterial(job.word)
+        end
+        if not job.block then
+            Voice.say("noMat", { n = #cells }, "answer")
+            st.build = nil
+            return setMode("idle")
+        end
+        job.started = true
+        T.save()
+        Voice.say("buildStart", { what = what, n = #cells, t = max(1, floor(#cells * 1.6 / 60 + 0.5)) }, "answer")
+    end
+    if job.i > #cells then
+        Voice.say("buildDone", { what = what, n = job.placed }, "answer")
+        logEv("bau", what .. " fertig: " .. job.placed .. " Bloecke")
+        st.build = nil
+        return setMode("idle")
+    end
+    local c = cells[job.i]
+    local x, y, z = c[1], c[2], c[3]
+    local slot = Build.matSlot(job)
+    if not slot then
+        B.sub = "holt Material"
+        if Locker.goHome(Brain.tick) then Locker.takeAll() end
+        slot = Build.matSlot(job)
+        if not slot then
+            Voice.say("noMat", { n = #cells - job.i + 1 }, "answer")
+            B.sub = "wartet auf Material"
+            T.save()
+            return setMode("idle")
+        end
+    end
+    if not at({ x = x, y = y + 1, z = z }) then
+        B.sub = "baut " .. (job.i - 1) .. "/" .. #cells
+        -- Ueber dem Feld ist schon etwas (Karte kann alt sein: einmal neu scannen)
+        if not Nav.ok(x, y + 1, z, false) then
+            if not job.rescanned then job.rescanned = true Sense.scan() return end
+            job.skipped, job.i = job.skipped + 1, job.i + 1
+            return
+        end
+        local r, why = goCell({ x = x, y = y + 1, z = z }, { limit = 4000, rounds = 10 })
+        if r ~= true then
+            if r == false and why ~= "abbruch" then
+                job.fails = (job.fails or 0) + 1
+                if job.fails >= 2 then job.skipped, job.i, job.fails = job.skipped + 1, job.i + 1, 0 end
+            end
+            return
+        end
+    end
+    local seen, info = turtle.inspectDown()
+    if seen and type(info) == "table" then
+        Map.block(x, y, z, info.name)
+        job.i = job.i + 1
+        return
+    end
+    turtle.select(slot)
+    local ok = turtle.placeDown()
+    turtle.select(1)
+    if ok then
+        Map.block(x, y, z, job.block)
+        job.placed, job.i, job.fails = job.placed + 1, job.i + 1, 0
+        if job.placed % 8 == 0 then T.save() end
+    else
+        job.fails = (job.fails or 0) + 1
+        if job.fails >= 3 then job.skipped, job.i, job.fails = job.skipped + 1, job.i + 1, 0 end
+        os.sleep(0.5)
+    end
+end
+
+function Modes.craft()
+    B.sub = "craftet Fackeln"
+    local n, err = Inv.craftTorches(st.craftN or 16, Brain.tick)
+    if n and n > 0 then Voice.say("crafted", { n = n }, "answer")
+    else Voice.say("Crafting ging nicht: " .. tostring(err or "Zutaten fehlen") .. ".", nil, "answer") end
+    setMode("idle")
+end
+
+-- Fackel neben den Spieler setzen (auf den Boden, Claude darueber)
+function Modes.torch()
+    local name = B.target
+    local e = Sense.players[name]
+    if not (e and e.x) then Voice.say("noSpy", nil, "answer") return setMode("idle") end
+    local slot = Inv.find(isTorch)
+    if not slot then Voice.say("noTorch", nil, "answer") return setMode("idle") end
+    local spot
+    for attempt = 1, 2 do
+        for r = 1, 2 do
+            for dx = -r, r do for dz = -r, r do
+                if not spot and max(abs(dx), abs(dz)) == r then
+                    local x, z = e.x + dx, e.z + dz
+                    if Map.state(x, e.y - 1, z) == 2 and Map.state(x, e.y, z) == 1 and Map.state(x, e.y + 1, z) == 1
+                       and Nav.ok(x, e.y + 1, z, true) then spot = { x = x, y = e.y, z = z } end
+                end
+            end end
+        end
+        if spot or attempt == 2 then break end
+        Sense.scan()
+    end
+    if not spot then Voice.say("Hier finde ich keinen Platz fuer eine Fackel.", nil, "answer") return setMode("stay") end
+    if goCell({ x = spot.x, y = spot.y + 1, z = spot.z }, { limit = 3000 }) == true then
+        slot = Inv.find(isTorch)
+        if slot then
+            turtle.select(slot)
+            if turtle.placeDown() then Map.block(spot.x, spot.y, spot.z, "minecraft:torch") Voice.say("torch", nil, "answer") end
+            turtle.select(1)
+        end
+    end
+    st.hold = here()
+    setMode("stay")
+end
+
+-- Verstecken: Claude versteckt sich, der Spieler sucht ("warm/kalt" leise).
+function Modes.hide()
+    local name = B.target
+    if not st.hide then
+        local e = Sense.players[name]
+        local cx, cy, cz = pos.x, pos.y, pos.z
+        if e and e.x then cx, cy, cz = e.x, e.y + 1, e.z end
+        local best
+        for try = 1, 80 do
+            local a, r = math.random() * 2 * math.pi, math.random(10, 24)
+            local x, z = cx + floor(math.cos(a) * r + 0.5), cz + floor(math.sin(a) * r + 0.5)
+            for y = cy - 2, cy + 2 do
+                -- am liebsten bekannt und mit Boden darunter, sonst ein noch unbekanntes Feld
+                local known = Map.state(x, y, z) == 1 and Map.state(x, y - 1, z) == 2
+                if Nav.ok(x, y, z, false) and (known or (try > 40 and Map.state(x, y, z) == 0)) then best = { x = x, y = y, z = z } break end
+            end
+            if best then break end
+        end
+        if not best then Voice.say("Ich finde kein gutes Versteck. Ich kenne die Gegend noch zu wenig.", nil, "answer") return setMode("stay") end
+        st.hide = { x = best.x, y = best.y, z = best.z, t0 = epoch() }
+    end
+    local h = st.hide
+    if not at(h) then
+        B.sub = "versteckt sich"
+        if goCell(h, { limit = 6000 }) == false then st.hide = nil end
+        return
+    end
+    B.sub = "versteckt"
+    local e = Sense.players[name]
+    if e and e.x then
+        local d = mdist(e.x, e.y, e.z, pos.x, pos.y, pos.z)
+        if d <= 3 then
+            Sense.sound("found")
+            Voice.say("hideFound", { n = epoch() - h.t0 }, "answer")
+            st.hide, st.hold = nil, here()
+            return setMode("stay")
+        end
+        if now() - (B.hintT or 0) > 12 then
+            B.hintT = now()
+            if h.last and h.last ~= d then Voice.say((d < h.last) and "warm" or "cold", nil, "answer", name) end
+            h.last = d
+        end
+    end
+    if epoch() - h.t0 > 300 then
+        Sense.sound("found")
+        Voice.say("hideGiveUp", nil, "answer")
+        st.hide, st.hold = nil, here()
+        return setMode("stay")
+    end
+    Sense.listen(1.5)
+end
+
+-- Suchen: Claude zaehlt bis 20 und findet den Spieler.
+function Modes.seek()
+    st.seek = st.seek or { t0 = epoch() }
+    local wait = 20 - (epoch() - st.seek.t0)
+    if wait > 0 then B.sub = "zaehlt" return Sense.listen(min(2, wait)) end
+    local name = B.target
+    local e = Sense.players[name]
+    if not (e and e.x) then Sense.pollPlayers({ name }) e = Sense.players[name] end
+    if not (e and e.x) or epoch() - st.seek.t0 > 260 then
+        Voice.say("Ich gebe auf. Gut versteckt.", nil, "answer")
+        st.seek = nil
+        return setMode("idle")
+    end
+    if max(abs(e.x - pos.x), abs(e.z - pos.z)) <= 2 and abs(e.y - pos.y) <= 2 then
+        Sense.sound("found")
+        Voice.say("seekFound", { n = epoch() - st.seek.t0 - 20 }, "answer")
+        st.seek, st.hold = nil, here()
+        return setMode("stay")
+    end
+    B.sub = "sucht " .. name
+    Nav.go(Nav.near(e.x, e.y, e.z, 1, 2, 0, 2), { tick = Brain.tick, maxSteps = 5, partial = true, limit = 3000 })
+end
+
+-- Tank leer: zur Basis (wenn es reicht), dort aus Inventar/Spind tanken.
+function Modes.nofuel()
+    local fuel = turtle.getFuelLevel()
+    if fuel == "unlimited" or fuel > 200 then return setMode("idle") end
+    T.refuelTo(2000)
+    if turtle.getFuelLevel() > 200 then return setMode("idle") end
+    if not Locker.atHome() and fuel > mdist(pos.x, pos.y, pos.z, 0, 0, 0) + 5 then
+        B.sub = "fliegt zum Tanken heim"
+        goCell({ x = 0, y = 0, z = 0 })
+        return
+    end
+    if Locker.atHome() then Locker.takeAll() T.refuelTo(2000) end
+    B.sub = "Tank leer"
+    Voice.say("noFuel", nil, "info")
+    Sense.listen(3)
+end
+
+-- ======================================================================
+-- [12] ABLAUF: Postfach, Beobachten, Melden, Hauptschleife
+-- ======================================================================
+local SHORT = { idle = "FREI", stay = "BLEIBT", follow = "FOLGT", come = "KOMMT", home = "HEIM", patrol = "PATROUILLE",
+                guard = "WACHE", build = "BAUT", craft = "CRAFTET", torch = "FACKEL", hide = "VERSTECKT", seek = "SUCHT",
+                nofuel = "TANK LEER", fight = "KAEMPFT" }
+local function toWorld(c)
+    if not c then return nil end
+    local x, y, z = T.relToWorld(c.x, c.y, c.z)
+    if not x then return nil end
+    return { x = x, y = y, z = z }
+end
+local function fromWorld(a)
+    if type(a) ~= "table" or not (tonumber(a.x) and tonumber(a.y) and tonumber(a.z)) then return nil end
+    local x, y, z = T.worldToRel(floor(a.x), floor(a.y), floor(a.z))
+    if not x then return nil end
+    return { x = x, y = y, z = z }
+end
+
+-- Nachrichten von OS / Fernbedienung
+function Brain.onMsg(from, a)
+    local op = a.op
+    if op == "cmd" and type(a.text) == "string" then
+        Cmd.run(a.text:sub(1, 80), type(a.user) == "string" and a.user:sub(1, 16) or (cfg.owner or "Fernbedienung"))
+    elseif op == "chat" then
+        Cmd.relayUntil = now() + 900
+        Cmd.chat(a.user, a.msg, true, false)
+    elseif op == "relay" then
+        Cmd.relayUntil = a.on and (now() + 900) or 0
+    elseif op == "say" and type(a.text) == "string" then
+        Voice.say(a.text:sub(1, 120), nil, "answer")
+    elseif op == "news" and type(a.text) == "string" then
+        if someoneNear(32) then Voice.say(a.text:sub(1, 120), nil, "chatter") end
+    elseif op == "mode" then
+        local m = a.mode
+        if m == "stay" then st.hold = here() end
+        if m == "guard" then st.guard = here() end
+        if m == "follow" or m == "come" or m == "seek" or m == "hide" then B.target = type(a.target) == "string" and a.target or cfg.owner end
+        if Modes[m] and m ~= "fight" then setMode(m) end
+        T.reply(from, { kind = "ok", op = "mode", mode = B.mode })
+    elseif op == "move" then
+        local d = ({ vor = 0, rechts = 1, zurueck = 2, links = 3 })[a.dir]
+        local x, y, z = pos.x, pos.y, pos.z
+        if d then
+            local f = (pos.f + d) % 4
+            x, z = x + DX[f], z + DZ[f]
+        elseif a.dir == "hoch" then y = y + 1
+        elseif a.dir == "runter" then y = y - 1 end
+        st.hold = here()
+        setMode("stay")
+        if Map.state(x, y, z) == 0 then Sense.scan() end
+        if Nav.ok(x, y, z, true) then Nav.stepTo(x, y, z) end
+        st.hold = here()
+    elseif op == "goto" then
+        local c = fromWorld(a)
+        if c then st.hold = c setMode("stay") end
+    elseif op == "set" and type(a.key) == "string" then
+        local ok = setCfg(a.key, a.value)
+        T.reply(from, { kind = "cfg", cfg = cfg, v = cfgV, ok = ok })
+    elseif op == "cfg" then
+        T.reply(from, { kind = "cfg", cfg = cfg, v = cfgV })
+    elseif op == "wp" then
+        if a.action == "clear" then mem.wps = {}
+        elseif a.action == "del" and tonumber(a.i) then table.remove(mem.wps, floor(a.i))
+        elseif a.action == "add" and #mem.wps < 24 then
+            local c = fromWorld(a)
+            if c then mem.wps[#mem.wps + 1] = c end
+        end
+        memDirty = true
+        T.reply(from, { kind = "ok", op = "wp", n = #mem.wps })
+    elseif op == "zone" then
+        if a.action == "clear" then mem.zones = {}
+        elseif a.action == "del" and tonumber(a.i) then table.remove(mem.zones, floor(a.i))
+        elseif a.action == "add" and #mem.zones < 16 then
+            local c1, c2 = fromWorld(a.a), fromWorld(a.b)
+            if c1 and c2 then
+                mem.zones[#mem.zones + 1] = { x1 = min(c1.x, c2.x), x2 = max(c1.x, c2.x), z1 = min(c1.z, c2.z), z2 = max(c1.z, c2.z),
+                                              y1 = min(c1.y, c2.y) - 4, y2 = max(c1.y, c2.y) + 16 }
+            end
+        end
+        memDirty = true
+        T.reply(from, { kind = "ok", op = "zone", n = #mem.zones })
+    elseif op == "park" then
+        local c = (a.here and here()) or fromWorld(a)
+        setCfg("park", c or false)
+        T.reply(from, { kind = "cfg", cfg = cfg, v = cfgV })
+    elseif op == "center" then
+        local c = fromWorld(a)
+        if c then setCfg("center", c) end
+    elseif op == "map" then
+        local r = clamp(floor(tonumber(a.r) or 24), 4, 48)
+        local wx, wy, wz = T.relToWorld(pos.x, pos.y, pos.z)
+        local cx, cz = tonumber(a.cx) or wx or pos.x, tonumber(a.cz) or wz or pos.z
+        local rows, world = Map.top(floor(cx), floor(cz), r)
+        local wps, zones = {}, {}
+        for i, w in ipairs(mem.wps) do wps[i] = toWorld(w) or w end
+        for i, zn in ipairs(mem.zones) do
+            local p1, p2 = toWorld({ x = zn.x1, y = zn.y1, z = zn.z1 }), toWorld({ x = zn.x2, y = zn.y2, z = zn.z2 })
+            zones[i] = (p1 and p2) and { x1 = min(p1.x, p2.x), x2 = max(p1.x, p2.x), z1 = min(p1.z, p2.z), z2 = max(p1.z, p2.z) } or zn
+        end
+        T.reply(from, { kind = "map", rows = rows, cx = floor(cx), cz = floor(cz), r = r, world = world,
+                        wps = wps, zones = zones, home = toWorld({ x = 0, y = 0, z = 0 }), park = toWorld(cfg.park or nil),
+                        center = toWorld(cfg.center or nil), known = Map.known })
+    elseif op == "log" then
+        local list = {}
+        for i = max(1, #Log.list - 59), #Log.list do list[#list + 1] = Log.list[i] end
+        local visits = {}
+        for i = max(1, #mem.visits - 39), #mem.visits do visits[#visits + 1] = mem.visits[i] end
+        local people = {}
+        for n, p in pairs(mem.people) do people[#people + 1] = { n = n, first = p.first, last = p.last, visits = p.visits, here = p.here } end
+        T.reply(from, { kind = "log", list = list, visits = visits, people = people, v = Log.v, kills = mem.kills or 0 })
+    elseif op == "forget" then
+        Map.clear()
+        Map.save()
+        Map.block(pos.x, pos.y, pos.z, nil)
+        logEv("karte", "Karte geloescht")
+    elseif op == "craft" then
+        st.craftN = clamp(floor(tonumber(a.n) or 16), 4, 64)
+        setMode("craft")
+    elseif op == "build" then
+        local c1, c2 = fromWorld(a.a), fromWorld(a.b)
+        local kind = ({ boden = "boden", dach = "dach", wand = "wand" })[a.kind]
+        if c1 and c2 and kind then
+            st.corners = { c1, c2 }
+            Cmd.run("bau " .. kind .. " " .. tostring(tonumber(a.h) or ""), cfg.owner or "Fernbedienung")
+        end
+    elseif op == "ping" then
+        T.reply(from, { kind = "pong" })
+    end
+end
+
+-- Wetter, Nacht, Tank, dunkle Ecken, Diamanten (nur im Stand)
+function Brain.observe()
+    local near = someoneNear(16)
+    local env = Sense.env
+    if env.rain ~= nil then
+        if env.rain and not B.wasRain and near then Voice.say(env.thunder and "thunder" or "rain", nil, "chatter") end
+        B.wasRain = env.rain
+    end
+    local night = isNight()
+    if night and not B.wasNight then
+        if near then Voice.say("night", nil, "chatter") end
+        Fight.nightKills = 0
+    elseif not night and B.wasNight and Fight.nightKills > 0 and near then
+        Voice.say("morningKills", { n = Fight.nightKills }, "chatter")
+        Fight.nightKills = 0
+    end
+    B.wasNight = night
+    local fuel = turtle.getFuelLevel()
+    if fuel ~= "unlimited" and fuel < 1000 and Inv.count(function(n) return FUELS[n] == true end) > 0 then
+        T.refuelTo(3000)
+        fuel = turtle.getFuelLevel()
+    end
+    if fuel ~= "unlimited" and fuel < 400 then Voice.say("lowFuel", { n = fuel }, "info") end
+    if near and env.light and env.light <= 4 and env.covered and (B.mode == "stay" or B.mode == "follow" or B.mode == "idle") then
+        if cfg.torches and Inv.find(isTorch) and near.near then
+            B.target = near.name
+            setMode("torch")
+        else
+            Voice.say("dark", { n = env.light }, "info")
+        end
+    end
+    local dia = Map.diamond
+    if dia and near then
+        mem.dia = mem.dia or {}
+        local key = floor(dia.x / 8) .. "," .. floor(dia.y / 8) .. "," .. floor(dia.z / 8)
+        if not mem.dia[key] and Voice.say("diamonds", nil, "chatter") then mem.dia[key], memDirty = true, true end
+        Map.diamond = nil
+    end
+    if Nav.stuck >= 3 then
+        Voice.say("stuck", nil, "info")
+        B.alarm = "festgefahren"
+        Nav.stuck = 0
+    end
+end
+
+function Brain.publish(force)
+    if not force and now() - (Brain.pubT or -9) < 1.5 then return end
+    Brain.pubT = now()
+    local near = {}
+    for n, e in pairs(Sense.players) do
+        if e.near and e.wx and #near < 6 and now() - (e.t or 0) < 15 then
+            near[#near + 1] = { n = n, x = e.wx, y = e.wy, z = e.wz, d = e.d and floor(e.d) or nil }
+        end
+    end
+    local mobs = {}
+    for i, m in ipairs(Sense.mobs) do
+        if i > 6 then break end
+        local w = toWorld(m)
+        if w then mobs[#mobs + 1] = { n = m.name, x = w.x, y = w.y, z = w.z } end
+    end
+    local job = st.build
+    T.publish({ m = B.mode, s = B.sub, tg = B.target, near = near, mobs = mobs, said = Voice.said, saidT = Voice.saidT,
+                mute = Voice.muted() and Voice.muteUntil or nil, kn = Map.known, kills = mem.kills or 0,
+                cv = cfgV, lv = Log.v, wp = #mem.wps, zn = #mem.zones, al = B.alarm,
+                b = job and { d = (job.i or 1) - 1, n = job.n or 0, k = job.kind, p = job.placed } or nil,
+                torches = Inv.count(isTorch), spy = not Sense.noSpy, scan = Sense.scanErr })
+    local short = SHORT[B.mode] or B.mode:upper()
+    if short ~= B.shortSent then B.shortSent = short T.status(short) end
+end
+
+-- Pflichten zwischendurch. light = waehrend einer Fahrt (nur das Noetigste).
+function Brain.service(light)
+    while #T.inbox > 0 do
+        local m = table.remove(T.inbox, 1)
+        local ok, err = pcall(Brain.onMsg, m.from, m.args)
+        if not ok then logEv("fehler", tostring(err)) end
+    end
+    local fast = B.mode == "follow" or B.mode == "come" or B.mode == "hide" or B.mode == "seek" or B.mode == "torch"
+    if now() - Sense.playerT > (fast and 2 or 4) then
+        Sense.pollPlayers(B.target and { B.target } or nil)
+        People.update()
+    end
+    local guardish = B.mode == "guard" or B.mode == "patrol" or (B.mode == "idle" and cfg.idle == "guard")
+    local mInt = guardish and 3 or (isNight() and 5 or 8)
+    if cfg.mobs and now() - Sense.mobT > mInt then Sense.pollEnv(true)
+    elseif now() - Sense.envT > 20 then Sense.pollEnv(false) end
+    -- unterwegs: wartende Saetze nicht ewig aufheben (kurz die Chat Box anlegen)
+    if #Voice.queue > 0 and now() - Sense.listenT > 2 then Sense.listen(0.1) end
+    if not light then
+        Brain.observe()
+        if Map.dirty and now() - (Map.savedT or 0) > 120 then Map.save() end
+        if (memDirty or Log.dirty) and now() - (Brain.memT or 0) > 60 then saveMem() Brain.memT = now() end
+    end
+    Brain.publish()
+end
+
+local FIGHT_OK = { idle = true, stay = true, follow = true, come = true, patrol = true, guard = true, build = true, home = true }
+local function fightArea()
+    if B.mode == "guard" then local g = st.guard or here() return cfg.guardR, g.x, g.y, g.z end
+    if B.mode == "idle" and cfg.idle == "guard" then local p = cfg.park or { x = 0, y = 0, z = 0 } return cfg.guardR, p.x, p.y, p.z end
+    return 8, pos.x, pos.y, pos.z
+end
+function Brain.fightTarget()
+    if not cfg.mobs or not FIGHT_OK[B.mode] or now() < (B.fightCool or 0) then return nil end
+    local R, cx, cy, cz = fightArea()
+    return Fight.nearest(R, cx, cy, cz), R, cx, cy, cz
+end
+
+-- Zwischen zwei Schritten: true = aktuelle Fahrt abbrechen (neuer Befehl, Monster)
+function Brain.tick()
+    Brain.service(true)
+    if B.interrupt then return true end
+    if Brain.fightTarget() then return true end
+    if People.pokeTask then return true end
+    return false
+end
+
+-- ---------- Start ----------
+Map.load()
+Map.block(pos.x, pos.y, pos.z, nil)
+if type(st.mode) == "string" and Modes[st.mode] then
+    B.mode, B.target = st.mode, st.target
+end
+if not compassKnown() then Voice.say("noWorld", nil, "info") end
+Voice.lastChatter = now()                     -- erst einmal nicht plaudern
+Voice.say("boot", nil, "info")
+if compassKnown() then Sense.scan() end
+Sense.sound("boot")
+logEv("start", "Claude gestartet")
+Brain.publish(true)
+
+while true do
+    local loopT = now()
+    T.check()
+    Brain.service()
+    B.interrupt = false             -- (neue Befehle aus dem Postfach gelten ab jetzt)
+    local fuel = turtle.getFuelLevel()
+    local m, R, cx, cy, cz = Brain.fightTarget()
+    if Nav.here() >= 3 then
+        B.sub = "befreit sich"
+        if not Nav.rescue() then Nav.stuck = Nav.stuck + 1 Sense.listen(2) end
+    elseif fuel ~= "unlimited" and fuel < 60 and B.mode ~= "nofuel" then
+        setMode("nofuel")
+    elseif m then
+        local before = B.sub
+        B.sub = "kaempft: " .. m.name
+        Brain.publish(true)
+        if Fight.engage(m, R, cx, cy, cz, function() Brain.service(true) return B.interrupt end) then
+            B.fightFails = 0
+        else
+            B.fightFails = min((B.fightFails or 0) + 1, 8)
+            B.fightCool = now() + 8 * B.fightFails
+        end
+        B.sub = before
+    elseif People.pokeTask then
+        local task = People.pokeTask
+        People.pokeTask = nil
+        if now() - task.t < 60 and (B.mode == "idle" or B.mode == "stay" or B.mode == "follow" or B.mode == "guard") then
+            local ok, err = pcall(Fight.poke, task.name)
+            if not ok then
+                if err == "STOP" then error("STOP", 0) end
+                logEv("fehler", "Stups: " .. tostring(err))
+            elseif err ~= true then
+                logEv("stups", "nicht moeglich")
+            end
+        end
+    else
+        local fn = Modes[B.mode] or Modes.idle
+        local ok, err = pcall(fn)
+        if not ok then
+            if err == "STOP" then error("STOP", 0) end
+            logEv("fehler", tostring(err))
+            B.sub = "Fehler: " .. tostring(err):sub(1, 40)
+            setMode("idle")
+            os.sleep(2)
+        end
+    end
+    -- nie ohne Pause im Kreis laufen (CC beendet Programme, die nicht abgeben)
+    if now() - loopT < 0.05 then sleep(0.25) end
+end
+]===],
     ["gts_turtle.lua"] = [===[
 -- ======================================================================
--- GTS SCHWARM-AGENT v5.1 - Turtle-Client       (CC: Tweaked, MC 1.21.1)
--- Gegenstueck zu GTS OS v7.1 - als startup.lua auf jede Turtle.
+-- GTS SCHWARM-AGENT v5.4 - Turtle-Client       (CC: Tweaked, MC 1.21.1)
+-- Gegenstueck zu GTS OS 1.2 - als startup.lua auf jede Turtle (auch Claude).
 -- ======================================================================
 -- Der Agent bleibt dauerhaft auf der Turtle. Er
 --   - funkt verschluesselt mit dem OS (Schwarm-Passwort wie am OS),
@@ -3665,7 +5953,7 @@ return #bad == 0, text
 --   [6] Welt und Funde     [12] Bildschirm und Start
 -- ======================================================================
 
-local VERSION = "5.3"
+local VERSION = "5.4"
 
 -- ======================================================================
 -- [1] KONFIGURATION
@@ -3719,7 +6007,8 @@ local FUEL = {
 
 -- Bleibt immer an Bord (wird weder weggeworfen noch entladen).
 local KEEP_PARTS = { "geo_scanner", "modem", "pickaxe", "chunk_controller", "minecraft:compass",
-                     "environment_detector", "player_detector", "chat_box", "computercraft:speaker" }
+                     "environment_detector", "player_detector", "chat_box", "computercraft:speaker",
+                     "_sword", "minecraft:crafting_table" }
 
 -- Diese Bloecke baut die Turtle nie ab: andere Turtles, Computer, Lager,
 -- Lootr-Kisten und Suspicious Clay/Gravel (Abbauen zerstoert den Inhalt).
@@ -3884,8 +6173,9 @@ local TOOLS = {
     player  = { ptype = "player_detector",      label = "Spieler",  items = { "advancedperipherals:player_detector" } },
     chat    = { ptype = "chat_box",             label = "Chat",     items = { "advancedperipherals:chat_box" } },
     speaker = { ptype = "speaker",              label = "Ton",      items = { "computercraft:speaker" } },
+    workbench = { ptype = "workbench",          label = "Werkbank", items = { "minecraft:crafting_table" } },
 }
-local TOOL_ORDER = { "chunky", "modem", "scanner", "compass", "env", "player", "chat", "speaker" }
+local TOOL_ORDER = { "chunky", "modem", "scanner", "compass", "env", "player", "chat", "speaker", "workbench" }
 
 -- Welches Werkzeug steckt an dieser Seite? (Ein Wired Modem zaehlt nicht,
 -- eine Spitzhacke ist kein Peripheriegeraet: nil.)
@@ -3914,6 +6204,12 @@ end
 local function isDigItem(name)
     return type(name) == "string" and name:find("pickaxe", 1, true) ~= nil
 end
+-- Arbeitswerkzeug an der Arbeitsseite: Spitzhacke, sonst ein Schwert (v5.4,
+-- z.B. Claude: kaempft, baut aber nie ab).
+local function isSwordItem(name)
+    return type(name) == "string" and name:find("_sword", 1, true) ~= nil
+end
+local function isWorkItem(name) return isDigItem(name) or isSwordItem(name) end
 
 local function findToolSlot(kind)
     for slot = 1, 16 do
@@ -3934,10 +6230,13 @@ local tool = {
 }
 
 local function findDigSlot()
+    local sword
     for slot = 1, 16 do
         local it = turtle.getItemDetail(slot)
         if it and (it.name == tool.digItem or isDigItem(it.name)) then return slot end
+        if it and isSwordItem(it.name) and not sword then sword = slot end
     end
+    return sword
 end
 
 local function emptySlot()
@@ -4034,7 +6333,7 @@ local function equipWork(kind)
     if not equipFrom(side, slot) then return false end
     local it = turtle.getItemDetail(slot)
     tool.lastSlot, tool.displaced, tool.workKind = slot, it and it.name or false, kind
-    if it and isDigItem(it.name) then tool.digItem = it.name end
+    if it and isWorkItem(it.name) then tool.digItem = it.name end
     local ok = waitSide(side, kind)
     if ok and kind == "modem" then openRadio(side) end
     return ok
@@ -4050,7 +6349,7 @@ local function restoreDig()
     local tries, seenSlot = {}, {}
     local function add(slot) if slot and not seenSlot[slot] then seenSlot[slot] = true tries[#tries + 1] = slot end end
     local last = tool.lastSlot and turtle.getItemDetail(tool.lastSlot)
-    if last and (last.name == tool.digItem or isDigItem(last.name)) then add(tool.lastSlot) end
+    if last and (last.name == tool.digItem or isWorkItem(last.name)) then add(tool.lastSlot) end
     for slot = 1, 16 do
         local it = turtle.getItemDetail(slot)
         if it and tool.digItem and it.name == tool.digItem then add(slot) end
@@ -4058,6 +6357,10 @@ local function restoreDig()
     for slot = 1, 16 do
         local it = turtle.getItemDetail(slot)
         if it and isDigItem(it.name) then add(slot) end
+    end
+    for slot = 1, 16 do
+        local it = turtle.getItemDetail(slot)
+        if it and isSwordItem(it.name) then add(slot) end
     end
     -- keine (passende) Spitzhacke: den Tausch rueckgaengig machen, sonst abnehmen
     if tool.lastSlot and ((last and last.name) or false) == tool.displaced then add(tool.lastSlot) end
@@ -4067,7 +6370,7 @@ local function restoreDig()
         local expect = it and toolOfItem(it.name) or nil
         if equipFrom(side, slot) then
             tool.workKind = nil
-            if it and isDigItem(it.name) then tool.digItem = it.name end
+            if it and isWorkItem(it.name) then tool.digItem = it.name end
             return waitSide(side, expect)
         end
     end
@@ -4081,8 +6384,12 @@ local function refreshTools()
         local k = toolAtSide(side)
         if k then have[k] = true end
         local name, known = equippedName(side)
-        if isDigItem(name) then have.pick = true tool.digItem = name end
-        if side == tool.work and not k and not known then have.pick = true end   -- vermutlich die Spitzhacke
+        if isDigItem(name) then have.pick = true end
+        if isSwordItem(name) then have.sword = true end
+        if isWorkItem(name) then tool.digItem = name end
+        if side == tool.work and not k and not known then
+            if isSwordItem(tool.digItem) then have.sword = true else have.pick = true end   -- vermutlich das Arbeitswerkzeug
+        end
     end
     for slot = 1, 16 do
         local it = turtle.getItemDetail(slot)
@@ -4090,6 +6397,7 @@ local function refreshTools()
             local k = toolOfItem(it.name)
             if k then have[k] = true end
             if isDigItem(it.name) then have.pick = true end
+            if isSwordItem(it.name) then have.sword = true end
         end
     end
     tool.have = have
@@ -4115,7 +6423,7 @@ local function setupTools()
             equipFrom(target, slot)
             -- dabei die Spitzhacke erwischt? Dann kommt sie an die andere Seite.
             local it = turtle.getItemDetail(slot)
-            if it and isDigItem(it.name) then
+            if it and isWorkItem(it.name) then
                 tool.digItem = it.name
                 equipFrom(otherSide(target), slot)
             end
@@ -4126,7 +6434,7 @@ local function setupTools()
     if not tool.radio then return false end
     tool.work = otherSide(tool.radio)
     local name = equippedName(tool.work)
-    if isDigItem(name) then tool.digItem = name end
+    if isWorkItem(name) then tool.digItem = name end
     local kind = toolAtSide(tool.work)
     local slot = findDigSlot()
     -- Spitzhacke aus dem Inventar an die Arbeitsseite: wenn dort ein
@@ -4137,7 +6445,7 @@ local function setupTools()
     if slot and kind then
         tool.workKind = kind
         restoreDig()
-    elseif slot and not (known and isDigItem(name)) then
+    elseif slot and not (known and isWorkItem(name)) then
         -- (ohne getEquipped: einfach anlegen - steckte schon eine dran, liegt sie danach im Inventar)
         local it = turtle.getItemDetail(slot)
         if equipFrom(tool.work, slot) and it then tool.digItem = it.name end
@@ -4993,6 +7301,32 @@ local T = {
     fuel = function() return turtle.getFuelLevel(), turtle.getFuelLimit() end,
     use = withTool, facing = compassFacing, tell = tell,
 }
+-- ---------- Programm-Postfach (v5.4) ----------
+-- Das OS (oder eine Fernbedienung) schickt einem laufenden Programm Nachrichten
+-- mit CMD "PMSG": sie landen sofort hier (nicht in der Warteschlange) und das
+-- Ereignis "gts_pmsg" wird ausgeloest. T.reply antwortet dem Absender (t = "CLD").
+-- T.publish(t) haengt eine kleine Tabelle an jeden Herzschlag (Feld ext).
+T.inbox = {}
+local programExt = nil
+function T.reply(to, msg)
+    if type(to) ~= "number" or type(msg) ~= "table" then return false end
+    msg.t = "CLD"
+    if not radioSide() then return false end
+    return pcall(Net.send, to, msg)
+end
+function T.publish(ext) programExt = ext end
+-- Rolle der Turtle (z.B. "claude"): steht in jedem Herzschlag, das OS zeigt sie
+-- dann nicht im Schwarm, sondern in einer eigenen App.
+function T.setRole(role)
+    data.role = role
+    saveData()
+end
+function T.role() return data.role end
+T.worldToRel = worldToRel
+function T.posOk() return posOk end
+function T.osId() return osId end
+function T.radio() return radioSide() end
+
 -- Welche Werkzeuge hat die Turtle? { scanner = true, compass = true, ... }
 function T.tools()
     local out = {}
@@ -5047,6 +7381,7 @@ function Progs.run(name, args, resume)
     T.state, T.args, T.resume = p.state, p.args, resume and true or false
     saveData()
     local ok, res, msg, mode = pcall(fn, T, p.args)
+    programExt = nil
     if not ok then
         if res == "STOP" then error("STOP", 0) end
         data.program, data.fence = nil, nil
@@ -5252,6 +7587,7 @@ local FN = {
         refreshTools()
         local list = {}
         if tool.have.pick then list[1] = "Hacke" end
+        if tool.have.sword then list[#list + 1] = "Schwert" end
         for _, k in ipairs(TOOL_ORDER) do
             if tool.have[k] and k ~= "modem" then list[#list + 1] = TOOLS[k].label end
         end
@@ -5336,7 +7672,8 @@ local function payload()
         -- Welt-Koordinaten (wenn bekannt): Turtle, Blick (0 = Nord) und Basis
         wpos = wpos, wf = data.compass and (data.compass + pos.f) % 4 or nil,
         base = data.world and { x = data.world.x, y = data.world.y, z = data.world.z } or nil,
-        gpsOk = gpsState.ok, pick = tool.have.pick == true,
+        gpsOk = gpsState.ok, pick = tool.have.pick == true, sword = tool.have.sword == true,
+        role = data.role, ext = programExt,
         gpsAge = gpsLast.t and math.floor(os.clock() - gpsLast.t) or nil, gpsFix = gpsLast.fix,
     }
 end
@@ -5384,7 +7721,10 @@ local function handle(msg, from)
                 logEvent("Programm " .. msg.name .. " erhalten")
             end
         elseif code then
-            -- Neuer Agent: als startup schreiben, danach neu starten.
+            -- Neuer Agent: als startup schreiben, danach neu starten. Ein Dauer-
+            -- Programm mit Rolle (Claude) wird dafuer kurz angehalten und laeuft
+            -- nach dem Neustart weiter (es bleibt "nicht pausiert").
+            if busy and data.program and data.role and current == "RUN" then abort = true end
             local self = (shell and shell.getRunningProgram and shell.getRunningProgram()) or "startup.lua"
             local h = fs.open("/" .. self .. ".neu", "w")
             if h then
@@ -5412,13 +7752,23 @@ local function handle(msg, from)
     if msg.t ~= "CMD" or type(msg.cmd) ~= "string" then return end
     osId = from
     -- Das OS wiederholt Befehle ohne Antwort; doppelte nur beantworten.
+    -- (je Absender: PC und Fernbedienung zaehlen unabhaengig voneinander)
     if type(msg.seq) == "number" then
-        if handled[msg.seq] then push() return end
-        handled[msg.seq] = true
-        handledList[#handledList + 1] = msg.seq
+        local key = tostring(from) .. ":" .. msg.seq
+        if handled[key] then push() return end
+        handled[key] = true
+        handledList[#handledList + 1] = key
         if #handledList > 32 then handled[table.remove(handledList, 1)] = nil end
     end
-    if msg.cmd == "ACK" then
+    if msg.cmd == "PMSG" then
+        -- Nachricht an das laufende Programm (v5.4): sofort, ohne Warteschlange
+        if type(msg.args) == "table" then
+            if #T.inbox >= 32 then table.remove(T.inbox, 1) end
+            T.inbox[#T.inbox + 1] = { from = from, args = msg.args }
+            os.queueEvent("gts_pmsg")
+        end
+        return
+    elseif msg.cmd == "ACK" then
         -- Das OS hat Funde bis Nummer n gespeichert.
         local n = tonumber(msg.n) or 0
         while data.finds[1] and data.finds[1].n <= n do table.remove(data.finds, 1) end
@@ -5498,7 +7848,7 @@ local function workLoop()
             logEvent(note)
             push()
             -- Ergebnis eines Programms per Chat Box direkt an den Besitzer
-            if job.cmd == "RUN" and tool.have.chat and data.owner then
+            if job.cmd == "RUN" and tool.have.chat and data.owner and not data.role then
                 pcall(tell, "#" .. os.getComputerID() .. " " .. (os.getComputerLabel() or "") .. ": " .. note)
             end
         end
@@ -5581,7 +7931,7 @@ local function draw(actions)
     term.clear()
     -- Kopf
     band(1, colors.gray) band(2, colors.gray)
-    put(2, 1, "GTS SCHWARM", colors.white, colors.gray)
+    put(2, 1, (data.role == "claude") and "CLAUDE" or "GTS SCHWARM", colors.white, colors.gray)
     local who = "#" .. os.getComputerID() .. (os.getComputerLabel() and (" " .. os.getComputerLabel()) or "")
     who = who:sub(1, w - 16)
     put(w - #who, 1, who, colors.lightGray, colors.gray)
@@ -5630,9 +7980,11 @@ local function draw(actions)
     for _, k in ipairs(TOOL_ORDER) do
         if tool.have[k] and k ~= "modem" then tl[#tl + 1] = TOOLS[k].label end
     end
-    if #tl > 0 or not tool.have.pick then
-        row(y, "WERKZEUG", tool.have.pick and table.concat(tl, " ") or ("KEINE HACKE! " .. table.concat(tl, " ")),
-            tool.have.pick and colors.white or colors.red)
+    local armed = tool.have.pick or (data.role and tool.have.sword)
+    if tool.have.sword then table.insert(tl, 1, "Schwert") end
+    if #tl > 0 or not armed then
+        row(y, "WERKZEUG", armed and table.concat(tl, " ") or ("KEINE HACKE! " .. table.concat(tl, " ")),
+            armed and colors.white or colors.red)
         y = y + 1
     end
     local progs = {}
@@ -5797,6 +8149,169 @@ term.setTextColor(colors.white)
 term.clear()
 term.setCursorPos(1, 1)
 print("Schwarm-Agent beendet. Position wird weiter mitgezaehlt.")
+]===],
+}
+LUA_APP_FILES = {
+    ["APIproject.lua"] = [===[
+-- ======================================================================
+-- APIproject.lua - GRUNDGERUEST: mit Claude (Anthropic API) chatten
+-- GTS OS 1.2 (LUA APPS). Stand: Geruest fuer ein spaeteres Projekt.
+-- ======================================================================
+-- Was schon geht:
+--   - API-Schluessel eingeben und speichern (nur auf diesem PC),
+--   - Frage tippen, Antwort von der Claude-API anzeigen (kurzer Verlauf).
+-- Was spaeter kommt (TODO):
+--   - Persoenlichkeit wie der Droide Claude (System-Text unten),
+--   - Antworten an den Droiden weiterreichen ($claude frag ...),
+--   - Kosten im Blick: Zaehler fuer Anfragen, Tageslimit.
+--
+-- Wichtig:
+--   - Die API kostet Geld je Anfrage und ist getrennt von einem Claude-Abo.
+--     Schluessel: platform.claude.com -> Settings -> API Keys.
+--     Dort unbedingt ein Ausgabelimit setzen.
+--   - Der Schluessel liegt als Datei auf diesem Computer. Nie auf Turtles
+--     oder Pockets kopieren.
+--   - Das Modell steht in CONFIG.model - aktuelle Namen stehen in der
+--     Anthropic-Doku (docs.claude.com, "Models").
+-- ======================================================================
+
+local CONFIG = {
+    url       = "https://api.anthropic.com/v1/messages",
+    model     = "claude-haiku-5-5",      -- guenstiges Modell fuer kurze Antworten
+    maxTokens = 300,
+    keyFile   = "/gts/api_schluessel.txt",
+    history   = 6,                        -- so viele Nachrichten gehen als Verlauf mit
+    system    = "Du bist Claude, ein trockener, hilfsbereiter Droide in einer Minecraft-Basis. " ..
+                "Antworte auf Deutsch, kurz (hoechstens 3 Saetze), ohne Emojis.",
+}
+
+-- ---------- [1] Schluessel ----------
+local function loadKey()
+    if not fs.exists(CONFIG.keyFile) then return nil end
+    local h = fs.open(CONFIG.keyFile, "r")
+    local k = h and h.readAll() or ""
+    if h then h.close() end
+    k = k:gsub("%s", "")
+    return (k ~= "") and k or nil
+end
+local function saveKey(k)
+    local h = fs.open(CONFIG.keyFile, "w")
+    if not h then return false end
+    h.write(k)
+    h.close()
+    return true
+end
+
+-- ---------- [2] Anfrage an die API ----------
+-- messages = { { role = "user"|"assistant", content = "..." }, ... }
+-- Rueckgabe: Antworttext oder nil, Fehlertext.
+local function ask(key, messages)
+    if not http then return nil, "HTTP ist aus (CC: Tweaked-Config)" end
+    local body = textutils.serializeJSON({
+        model = CONFIG.model, max_tokens = CONFIG.maxTokens, system = CONFIG.system, messages = messages,
+    })
+    local headers = {
+        ["x-api-key"] = key,
+        ["anthropic-version"] = "2023-06-01",
+        ["content-type"] = "application/json",
+    }
+    local ok, err = http.request({ url = CONFIG.url, body = body, headers = headers, method = "POST" })
+    if not ok then return nil, tostring(err) end
+    while true do
+        local ev, url, h, failH = os.pullEvent()
+        if ev == "http_success" and url == CONFIG.url then
+            local text = h.readAll()
+            h.close()
+            local data = textutils.unserializeJSON(text or "")
+            if type(data) == "table" and type(data.content) == "table" then
+                local out = {}
+                for _, part in ipairs(data.content) do
+                    if type(part) == "table" and part.type == "text" then out[#out + 1] = part.text end
+                end
+                return table.concat(out, "\n")
+            end
+            return nil, "unerwartete Antwort"
+        elseif ev == "http_failure" and url == CONFIG.url then
+            local msg = tostring(h)
+            if failH then
+                local t = failH.readAll() or ""
+                failH.close()
+                local data = textutils.unserializeJSON(t)
+                if type(data) == "table" and type(data.error) == "table" then msg = tostring(data.error.message) end
+            end
+            return nil, msg
+        end
+    end
+end
+
+-- ---------- [3] Oberflaeche ----------
+local w, h = term.getSize()
+local lines = {}          -- Anzeige (umgebrochen)
+local history = {}        -- Verlauf fuer die API
+
+local function add(text, color)
+    for _, para in ipairs({ tostring(text):match("^(.-)%s*$") }) do
+        local line = ""
+        for word in para:gmatch("%S+") do
+            if #line + #word + 1 > w - 1 then lines[#lines + 1] = { line, color } line = word
+            else line = (line == "") and word or (line .. " " .. word) end
+        end
+        lines[#lines + 1] = { line, color }
+    end
+    while #lines > 200 do table.remove(lines, 1) end
+end
+
+local function redraw()
+    term.setBackgroundColor(colors.black)
+    term.clear()
+    term.setCursorPos(1, 1)
+    term.setTextColor(colors.lime)
+    term.write("CLAUDE API (Geruest)")
+    local first = math.max(1, #lines - (h - 3) + 1)
+    for i = first, #lines do
+        term.setCursorPos(1, 2 + i - first)
+        term.setTextColor(lines[i][2] or colors.white)
+        term.write(lines[i][1])
+    end
+    term.setCursorPos(1, h)
+    term.setTextColor(colors.lightGray)
+    term.write("> ")
+    term.setTextColor(colors.white)
+end
+
+local key = loadKey()
+if not key then
+    add("Noch kein API-Schluessel. Eingeben (beginnt mit sk-ant-), leer = abbrechen:", colors.yellow)
+    redraw()
+    local k = read("*") or ""
+    if k == "" then return end
+    if not saveKey(k) then print("Speichern fehlgeschlagen") return end
+    key = k
+    lines = {}
+end
+add("Frag etwas. Leere Zeile = Ende. Jede Anfrage kostet etwas Guthaben.", colors.lightGray)
+
+while true do
+    redraw()
+    local q = read()
+    if not q or q == "" then break end
+    add("Du: " .. q, colors.lightBlue)
+    history[#history + 1] = { role = "user", content = q }
+    -- Verlauf kuerzen; die API will mit einer Frage (role = "user") beginnen
+    while #history > CONFIG.history or (history[1] and history[1].role ~= "user") do table.remove(history, 1) end
+    redraw()
+    local answer, err = ask(key, history)
+    if answer then
+        add("Claude: " .. answer, colors.white)
+        history[#history + 1] = { role = "assistant", content = answer }
+    else
+        add("Fehler: " .. tostring(err), colors.red)
+        table.remove(history)          -- Frage ohne Antwort nicht im Verlauf lassen
+    end
+end
+term.setBackgroundColor(colors.black)
+term.clear()
+term.setCursorPos(1, 1)
 ]===],
 }
 -- @@PROGRAMS-END
@@ -6124,13 +8639,24 @@ function TurtleProgs.agentCode()
 end
 
 function TurtleProgs.install()
+    -- Lua-Apps (z.B. APIproject.lua): einmal anlegen. Wer sie loescht, bekommt
+    -- sie nicht wieder (Merker in /gts), eine eigene Fassung bleibt unangetastet.
+    pcall(function()
+        for file, code in pairs(LUA_APP_FILES) do
+            local path, mark = fs.combine(CONFIG.scriptDir, file), "/gts/.app_" .. file
+            if not fs.exists(mark) then
+                if not fs.exists(path) then writeAll(path, code) end
+                writeAll(mark, "1")
+            end
+        end
+    end)
     pcall(function()
         fs.makeDir(CONFIG.progDir)
         for file, code in pairs(PROGRAM_FILES) do
             local path = fs.combine(CONFIG.progDir, file)
             local cur = fs.exists(path) and readAll(path) or nil
-            if file == "gts_turtle.lua" then
-                -- alte Kopie des Agenten aufraeumen (nur wenn sie nicht neuer ist)
+            if file == "gts_turtle.lua" or file == "claude.lua" then
+                -- Agent und Claude bleiben nur im OS (spart Platz); eine eigene, NEUERE Kopie wird benutzt
                 if cur and not verLess(TurtleProgs.version(file, code), TurtleProgs.version(file, cur)) then fs.delete(path) end
             elseif not cur or verLess(TurtleProgs.version(file, cur), TurtleProgs.version(file, code)) then
                 if writeAll(path, code) and cur then Kernel.log("INFO", "Turtle-Programm aktualisiert: " .. file) end
@@ -6145,7 +8671,7 @@ function TurtleProgs.custom()
     if not fs.isDir(CONFIG.progDir) then return out end
     for _, file in ipairs(fs.list(CONFIG.progDir)) do
         local name = file:match("^([%w_%-]+)%.lua$")
-        if name and name ~= "gts_turtle" and name ~= "dd" and name ~= "chunk" and name ~= "test" and #out < 8 then
+        if name and name ~= "gts_turtle" and name ~= "dd" and name ~= "chunk" and name ~= "test" and name ~= "claude" and #out < 8 then
             out[#out + 1] = name
         end
     end
@@ -6189,7 +8715,7 @@ local legacy = {}   -- alte Turtles (v4, unverschluesselt): id -> Zeitpunkt
 Geo = { gps = nil, asked = -100 }
 
 function Geo.here()
-    if EDITION == "pocket" and os.clock() - Geo.asked > 10 then
+    if (EDITION == "pocket" or EDITION == "claude") and os.clock() - Geo.asked > 10 then
         Geo.asked = os.clock()
         os.queueEvent("gts_gps")
     end
@@ -7427,6 +9953,807 @@ makeFleet{
         { label = "BASIS", cmd = "HOME", fg = colors.lightBlue, confirm = true },
     },
 }
+
+-- ======================================================================
+-- [7c] CLAUDE: der Begleit-Droide
+-- ======================================================================
+-- Eine Turtle mit dem Programm "claude" (Agent ab v5.4) meldet sich mit
+-- role = "claude". Sie erscheint NICHT im Schwarm (also nie bei ALLE,
+-- PLANER usw.), sondern hier. Befehle gehen als CMD "PMSG" direkt an das
+-- laufende Programm, Antworten (Karte, Log, Einstellungen) kommen als "CLD".
+-- Am PC hoert die Chat Box mit und reicht "$claude ..." weiter.
+-- Die Fernbedienung (gts_claude.lua, EDITION "claude") ist dieselbe App.
+local REMOTE = (EDITION == "claude")
+local Claude = { id = "claude", title = "CLAUDE", order = 3.5, view = "status", units = {}, count = 0,
+                 modePage = { page = 1 }, logPage = { page = 1 }, setupPage = { page = 1 }, group = "FREI",
+                 zoom = 1, mapT = -99, logT = -99, cfgT = -99, relayT = -999 }
+
+local CL_MODES = {
+    idle = "FREI", stay = "BLEIBT", follow = "FOLGT", come = "KOMMT", home = "FLIEGT HEIM", patrol = "PATROUILLE",
+    guard = "WACHE", build = "BAUT", craft = "CRAFTET", torch = "FACKEL", hide = "VERSTECKT SICH", seek = "SUCHT",
+    nofuel = "TANK LEER",
+}
+
+Claude.MODES = CL_MODES
+local function clNum(v) return (type(v) == "number" and v == v and math.abs(v) < 1e13) and v or nil end
+local function clCell(t)
+    if type(t) == "table" and clNum(t.x) and clNum(t.y) and clNum(t.z) then
+        return { x = math.floor(t.x), y = math.floor(t.y), z = math.floor(t.z) }
+    end
+end
+local function clText(v, n) return type(v) == "string" and (v:sub(1, n):gsub("[^\32-\126\160-\255]", "?")) or nil end
+
+-- Herzschlag (UP mit role = "claude") und Antworten (CLD)
+function Claude:receive(id, msg)
+    if msg.t == "CLD" then return self:reply(id, msg) end
+    local u = self.units[id]
+    if not u then
+        if self.count >= 4 then return false end
+        u = { id = id }
+        self.units[id] = u
+        self.count = self.count + 1
+        Kernel.log("INFO", "Claude #" .. id .. " verbunden")
+        -- war bisher eine normale Schwarm-Turtle: dort austragen
+        local sw = Fleets and Fleets.UP
+        if sw and sw.store and sw.store[id] then
+            sw.store[id] = nil
+            sw.count = math.max(0, (sw.count or 1) - 1)
+        end
+    end
+    u.seen, u.online = os.clock(), true
+    u.status = clText(msg.status, 14) or "?"
+    u.label = clText(msg.label, 12)
+    u.v = clText(msg.v, 8)
+    u.fuel = (clNum(msg.fuel) or msg.fuel == "unlimited") and msg.fuel or nil
+    u.fuelMax = clNum(msg.fuelMax)
+    u.inv = clNum(msg.inv)
+    u.wpos = clCell(msg.wpos)
+    u.wf = clNum(msg.wf) and (math.floor(msg.wf) % 4) or nil
+    u.base = clCell(msg.base)
+    u.prog, u.paused = clText(msg.prog, 12), msg.paused == true
+    u.tools = {}
+    if type(msg.tools) == "table" then
+        for i = 1, math.min(#msg.tools, 12) do if type(msg.tools[i]) == "string" then u.tools[msg.tools[i]] = true end end
+    end
+    u.sword = msg.sword == true
+    if type(msg.progs) == "table" and type(msg.progs.claude) == "string" then u.hash = msg.progs.claude:sub(1, 16) end
+    local x = type(msg.ext) == "table" and msg.ext or nil
+    if x then
+        local e = { m = clText(x.m, 10), s = clText(x.s, 40), tg = clText(x.tg, 16), said = clText(x.said, 120),
+                    saidT = clNum(x.saidT), mute = clNum(x.mute), kn = clNum(x.kn), kills = clNum(x.kills),
+                    cv = clNum(x.cv), lv = clNum(x.lv), wp = clNum(x.wp), zn = clNum(x.zn), al = clText(x.al, 30),
+                    torches = clNum(x.torches), spy = x.spy ~= false, scan = clText(x.scan, 40), near = {}, mobs = {} }
+        if type(x.b) == "table" then e.b = { d = clNum(x.b.d) or 0, n = clNum(x.b.n) or 0, k = clText(x.b.k, 8) } end
+        for _, list in ipairs({ { "near", 6 }, { "mobs", 6 } }) do
+            local src = x[list[1]]
+            if type(src) == "table" then
+                for i = 1, math.min(#src, list[2]) do
+                    local p = src[i]
+                    if type(p) == "table" and clCell(p) then
+                        local c = clCell(p)
+                        c.n, c.d = clText(p.n, 16) or "?", clNum(p.d)
+                        e[list[1]][#e[list[1]] + 1] = c
+                    end
+                end
+            end
+        end
+        if e.said and e.said ~= (u.ext and u.ext.said) and e.saidT ~= (u.ext and u.ext.saidT) then
+            u.sayLog = u.sayLog or {}
+            table.insert(u.sayLog, 1, { t = e.saidT, text = e.said })
+            while #u.sayLog > 8 do table.remove(u.sayLog) end
+        end
+        if e.al and e.al ~= (u.ext and u.ext.al) then Kernel.notify("Claude: " .. e.al, colors.orange, "claude") end
+        -- neue Einstellungen / neues Log: bei Bedarf nachladen
+        if self.cfg and e.cv and e.cv ~= self.cfgV and self.sel == id then self.cfgT = -99 end
+        if self.log and e.lv and e.lv ~= self.logV and self.sel == id then self.logT = -99 end
+        u.ext = e
+    else
+        u.ext = nil
+    end
+    if not self.sel or not (self.units[self.sel] and self.units[self.sel].online) then self.sel = id end
+    return Kernel.app == self or (REMOTE and Kernel.app.id == "home")
+end
+
+function Claude:reply(id, msg)
+    if id ~= self.sel then return false end
+    if msg.kind == "map" and type(msg.rows) == "table" then
+        local rows = {}
+        for i = 1, math.min(#msg.rows, 97) do rows[i] = clText(msg.rows[i], 97) or "" end
+        local function cells(list, n)
+            local out = {}
+            for i = 1, math.min(type(list) == "table" and #list or 0, n) do
+                local c = clCell(list[i])
+                if c then out[#out + 1] = c end
+            end
+            return out
+        end
+        local zones = {}
+        for i = 1, math.min(type(msg.zones) == "table" and #msg.zones or 0, 16) do
+            local z = msg.zones[i]
+            if type(z) == "table" and clNum(z.x1) and clNum(z.x2) and clNum(z.z1) and clNum(z.z2) then
+                zones[#zones + 1] = { x1 = z.x1, x2 = z.x2, z1 = z.z1, z2 = z.z2 }
+            end
+        end
+        self.map = { rows = rows, cx = clNum(msg.cx) or 0, cz = clNum(msg.cz) or 0, r = clNum(msg.r) or 0,
+                     world = msg.world == true, wps = cells(msg.wps, 24), zones = zones, home = clCell(msg.home),
+                     park = clCell(msg.park), center = clCell(msg.center), known = clNum(msg.known) }
+        return Kernel.app == self or REMOTE
+    elseif msg.kind == "log" then
+        local function list(src, n, fn)
+            local out = {}
+            if type(src) ~= "table" then return out end
+            for i = math.max(1, #src - n + 1), #src do
+                local v = fn(src[i])
+                if v then out[#out + 1] = v end
+            end
+            return out
+        end
+        self.log = {
+            list = list(msg.list, 60, function(e) return type(e) == "table" and { t = clNum(e.t) or 0, k = clText(e.k, 8) or "", text = clText(e.text, 80) or "" } end),
+            visits = list(msg.visits, 40, function(v) return type(v) == "table" and { n = clText(v.n, 16) or "?", a = clNum(v.a) or 0, d = clNum(v.d) } end),
+            people = list(msg.people, 40, function(p) return type(p) == "table" and { n = clText(p.n, 16) or "?", first = clNum(p.first), last = clNum(p.last), visits = clNum(p.visits) or 0, here = p.here == true } end),
+            kills = clNum(msg.kills) or 0,
+        }
+        self.logV = clNum(msg.v)
+        return Kernel.app == self or REMOTE
+    elseif msg.kind == "cfg" and type(msg.cfg) == "table" then
+        self.cfg, self.cfgV = msg.cfg, clNum(msg.v)
+        return Kernel.app == self or REMOTE
+    end
+    return false
+end
+
+function Claude:unit() return self.sel and self.units[self.sel] end
+function Claude:owner()
+    local o = Settings.get("owner")
+    return (type(o) == "string" and o ~= "") and o or nil
+end
+
+-- An das laufende Programm (PMSG). Ohne Modem/Claude: Hinweis.
+function Claude:send(args, id)
+    id = id or self.sel
+    local u = id and self.units[id]
+    if not (u and Kernel.hw.modem) then
+        Kernel.notify(Kernel.hw.modem and "Claude nicht in Reichweite" or "Kein Modem angeschlossen", colors.red)
+        return false
+    end
+    Kernel.seq = Kernel.seq + 1
+    Kernel.post(id, { t = "CMD", cmd = "PMSG", seq = Kernel.seq, args = args })
+    return true
+end
+function Claude:cmd(text) return self:send({ op = "cmd", text = text, user = self:owner() }) end
+function Claude:agentCmd(cmd, args)
+    local u = self:unit()
+    if not (u and Kernel.hw.modem) then return Kernel.notify("Claude nicht in Reichweite", colors.red) end
+    Kernel.seq = Kernel.seq + 1
+    Kernel.post(u.id, { t = "CMD", cmd = cmd, seq = Kernel.seq, args = args })
+end
+
+-- Neuigkeiten aus dem OS (Funde des Schwarms): Claude erzaehlt sie, wenn jemand da ist
+function Claude:news(text)
+    for id, u in pairs(self.units) do
+        if u.online then self:send({ op = "news", text = tostring(text):sub(1, 100) }, id) end
+    end
+end
+
+function Claude:tick()
+    local now, changed = os.clock(), false
+    for id, u in pairs(self.units) do
+        if u.online and now - u.seen > CONFIG.offlineAfter then
+            u.online, changed = false, true
+            Kernel.log("WARN", "Claude #" .. id .. " offline")
+        end
+    end
+    local u = self:unit()
+    local open = Kernel.app == self or (REMOTE and Kernel.app.id == "home")
+    if u and u.online and open then
+        if self.view == "map" and now - self.mapT > 8 then self.mapT = now self:send({ op = "map", r = self:mapRadius() }) end
+        if self.view == "log" and now - self.logT > 20 then self.logT = now self:send({ op = "log" }) end
+        if (self.view == "modes" or not self.cfg) and now - self.cfgT > 30 then self.cfgT = now self:send({ op = "cfg" }) end
+    end
+    -- PC mit Chat Box: Claude sagen, dass Befehle von hier kommen (keine Doppelten)
+    if not REMOTE and not READONLY and now - self.relayT > 300 and Extras.find("chat_box") then
+        self.relayT = now
+        for id, x in pairs(self.units) do if x.online then self:send({ op = "relay", on = true }, id) end end
+    end
+    return (changed or (open and now % 2 < 1)) and open
+end
+
+-- Chat-Weiterleitung (nur PC): "$claude ..." aus dem Spiel an Claude
+function Claude:service()
+    if REMOTE or READONLY then return end
+    local start = os.clock()
+    while true do
+        local _, user, msg = os.pullEvent("chat")
+        -- (die Chat Box liefert beim Start die letzte Nachricht noch einmal)
+        if os.clock() - start > 3 and type(user) == "string" and type(msg) == "string" and msg:lower():find("^%s*@?claude") then
+            for id, u in pairs(self.units) do
+                if u.online then self:send({ op = "chat", user = user:sub(1, 16), msg = msg:sub(1, 120) }, id) end
+            end
+        end
+    end
+end
+
+function Claude:onEnter(view)
+    self.input, self.pick = nil, nil
+    if view == "map" or view == "log" or view == "modes" or view == "status" then self.view = view end
+    self.mapT, self.logT = -99, -99
+end
+function Claude:insert(text) return Input.insert(self, text) end
+function Claude:key(action) return Input.key(self, action) end
+function Claude:onChar(ch) Input.insert(self, ch) end
+function Claude:onPaste(text) Input.insert(self, text) end
+function Claude:onKey(code) Input.onKey(self, code) end
+function Claude:onScroll(dir)
+    if self.view == "map" then self.zoom = math.max(1, math.min(3, self.zoom + dir)) self.mapT = -99 return end
+    local st = (self.view == "log") and self.logPage or ((self.view == "modes") and self.modePage or nil)
+    if st then st.page = math.max(1, st.page + dir) end
+end
+
+-- ---------- Zeichnen ----------
+local function clAgo(t)
+    if not t then return "-" end
+    local d = math.floor(os.epoch("utc") / 1000) - t
+    if d < 60 then return "gerade" end
+    if d < 3600 then return math.floor(d / 60) .. " min" end
+    if d < 86400 then return math.floor(d / 3600) .. " h" end
+    return math.floor(d / 86400) .. " d"
+end
+
+function Claude:tabs(top)
+    local list = { { "status", "STATUS" }, { "map", "KARTE" }, { "modes", "MODI" }, { "log", "LOG" } }
+    if Claude.compact() then table.insert(list, 2, { "pad", "STEUER" }) end
+    local function open(v) self.view = v self.mapT, self.logT, self.cfgT, self.pick = -99, -99, -99, nil end
+    if UI.narrow() then
+        -- schmal (Pocket): < SEITE > zum Durchblaettern
+        local w, idx = Kernel.w, 1
+        for i, t in ipairs(list) do if t[1] == self.view then idx = i end end
+        local function go(d) open(list[(idx - 1 + d) % #list + 1][1]) end
+        UI.button{ x = 1, y = top, w = 4, h = 1, text = "\17", onClick = function() go(-1) end }
+        UI.button{ x = 6, y = top, w = w - 10, h = 1, text = list[idx][2] .. " " .. idx .. "/" .. #list, style = "primary",
+                   onClick = function() go(1) end }
+        UI.button{ x = w - 3, y = top, w = 4, h = 1, text = "\16", onClick = function() go(1) end }
+        return top + 2
+    end
+    local btns = {}
+    for _, t in ipairs(list) do
+        btns[#btns + 1] = { text = t[2], h = 1, style = (self.view == t[1]) and "primary" or nil, onClick = function() open(t[1]) end }
+    end
+    return UI.flow(btns, 2, top, Kernel.w - 1) + 1
+end
+
+-- kleine Bildschirme (PC ohne Monitor, Pocket): Steuerkreuz auf eigener Seite
+function Claude.compact() return Kernel.h < 22 end
+
+function Claude:draw()
+    if self.input then return Input.draw(self) end
+    local u = self:unit()
+    if not u then return self:drawSetup() end
+    if self.view == "pad" and not Claude.compact() then self.view = "status" end
+    if self.view == "map" then return self:drawMap(u) end
+    if self.view == "pad" then return self:drawPad(u) end
+    if self.view == "modes" then return self:drawModes(u) end
+    if self.view == "log" then return self:drawLog(u) end
+    return self:drawStatus(u)
+end
+
+function Claude:header(u, sub)
+    local narrow = UI.narrow()
+    local run = u.prog == "claude" and not u.paused
+    local acts = {}
+    if not u.online then
+        acts[1] = { text = "OFFLINE", style = "ghost", fg = colors.red }
+    elseif run then
+        acts[1] = { text = "STOP", style = "danger", confirm = "claude-stop", onClick = function() self:agentCmd("STOP") end }
+    else
+        acts[1] = { text = "START", style = "primary", onClick = function()
+            self:agentCmd("RUN", { name = "claude", resume = true, owner = self:owner() })
+        end }
+    end
+    -- neuer Agent im OS (nur PC): einzeln an Claude (Claude laeuft danach weiter)
+    if not READONLY and u.online and TurtleProgs and TurtleProgs.get and Fleets.UP then
+        local agent = TurtleProgs.get("agent")
+        if agent and u.v and agent.ver and verLess(u.v, agent.ver) then
+            table.insert(acts, 1, { text = "AGENT " .. agent.ver, style = "accent", onClick = function()
+                Fleets.UP:pushCode(u.id, "AGENT", "agent", agent)
+                Kernel.notify("Claude: Agent v" .. agent.ver .. " uebertragen", colors.lime, "claude")
+            end })
+        end
+    end
+    -- neue Programm-Fassung im OS (nur PC): einspielen
+    if not READONLY and u.online and TurtleProgs and TurtleProgs.get then
+        local prog = TurtleProgs.get("claude")
+        if prog and u.hash and prog.hash ~= u.hash and Fleets.UP then
+            table.insert(acts, 1, { text = (UI.bh() == 1) and "UPDATE" or "PROGRAMM-UPDATE", style = "accent", onClick = function()
+                self:agentCmd("STOP")
+                Fleets.UP:pushCode(u.id, "PROG", "claude", prog)
+                self:agentCmd("RUN", { name = "claude", hash = prog.hash, resume = true, owner = self:owner() })
+                u.hash = prog.hash
+                Kernel.notify("Claude: neues Programm uebertragen", colors.lime, "claude")
+            end })
+        end
+    end
+    return UI.header("CLAUDE", sub, acts)
+end
+
+-- Ausruestung, die Claude benutzt (Name im Herzschlag, Anzeige)
+local CL_GEAR = { { "scanner", "Geo Scanner" }, { "player", "Player Detector" }, { "env", "Env. Detector" },
+                  { "chat", "Chat Box" }, { "compass", "Kompass" }, { "speaker", "Speaker" }, { "workbench", "Werkbank" } }
+
+function Claude:drawStatus(u)
+    local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
+    local e = u.ext or {}
+    local run = u.prog == "claude" and not u.paused
+    local mode = run and (CL_MODES[e.m or ""] or tostring(e.m or "?"):upper()) or (u.paused and "ANGEHALTEN" or "PROGRAMM AUS")
+    local compact = Claude.compact()
+    local top = self:header(u, (not narrow and not compact) and ("#" .. u.id .. (u.label and (" " .. u.label) or "") .. (u.v and ("  Agent " .. u.v) or "")) or nil)
+    top = self:tabs(top)
+    local x0 = narrow and 1 or 2
+    local y = top
+    -- Modus, daneben/darunter was Claude gerade tut
+    UI.text(x0, y, "\7 ", run and colors.lime or colors.orange)
+    UI.text(x0 + 2, y, mode, colors.white)
+    local doing = (run and (e.s or "") or (u.status or "")) .. (e.mute and "  (stumm)" or "")
+    if compact and x0 + 4 + #mode + #doing <= w then
+        UI.text(x0 + 4 + #mode, y, doing, colors.lightGray)
+        y = y + 1
+    else
+        y = y + 1
+        UI.text(x0 + 2, y, doing:sub(1, w - x0 - 3), colors.lightGray)
+        y = y + 1
+    end
+    -- Tank
+    local fuel = u.fuel
+    if type(fuel) == "number" then
+        local bw = math.min(narrow and (w - 12) or 30, w - 14)
+        UI.text(x0, y, "TANK", colors.lightGray)
+        UI.bar(x0 + 6, y, bw, fuel / 5000, (fuel < 400) and colors.red or colors.lime)
+        UI.text(x0 + 7 + bw, y, tostring(fuel), (fuel < 400) and colors.red or colors.white)
+        y = y + 1
+    end
+    local where = u.wpos and (u.wpos.x .. " " .. u.wpos.y .. " " .. u.wpos.z) or "?"
+    local info = "BEI " .. where
+    if not narrow and not compact then
+        info = info .. "   KARTE " .. (e.kn or 0) .. " Felder   MONSTER " .. (e.kills or 0)
+        if e.torches then info = info .. "   FACKELN " .. e.torches end
+    end
+    UI.text(x0, y, info:sub(1, w - x0), colors.lightGray)
+    y = y + 1
+    if e.b and e.b.n and e.b.n > 0 then
+        UI.text(x0, y, ("BAU " .. (e.b.k or "") .. " " .. e.b.d .. "/" .. e.b.n):sub(1, w - x0), colors.yellow)
+        y = y + 1
+    end
+    if e.spy == false then UI.text(x0, y, ("Spieler-Positionen aus (Server-Config playerSpy)"):sub(1, w - x0), colors.orange) y = y + 1 end
+    if e.scan and e.scan ~= "" then UI.text(x0, y, ("Scanner: " .. e.scan):sub(1, w - x0), colors.orange) y = y + 1 end
+    -- fehlende Ausruestung (Claude laeuft trotzdem, nur ohne das)
+    if u.tools and run then
+        local miss = {}
+        if not u.sword then miss[1] = "Schwert" end
+        for _, g in ipairs(CL_GEAR) do if not u.tools[g[1]] then miss[#miss + 1] = g[2] end end
+        if #miss > 0 then UI.text(x0, y, ("FEHLT: " .. table.concat(miss, ", ")):sub(1, w - x0), colors.orange) y = y + 1 end
+    end
+    -- Wer ist in der Naehe (antippen = folgen)
+    if #(e.near or {}) > 0 then
+        -- eine Zeile; was nicht passt, steht als "+n" am Ende
+        UI.text(x0, y, "NAH:", colors.lightGray)
+        local x, n = x0 + 5, #e.near
+        for i, p in ipairs(e.near) do
+            local label = p.n .. (p.d and (" " .. p.d) or "")
+            local room = w - ((i < n) and 3 or 0)
+            if x + #label + 1 > room then
+                UI.text(x, y, "+" .. (n - i + 1), colors.lightGray)
+                break
+            end
+            x = UI.button{ x = x, y = y, h = 1, text = label, onClick = function()
+                self:send({ op = "mode", mode = "follow", target = p.n })
+            end } + 1
+        end
+        y = y + 2
+    end
+    -- Befehle
+    local acts = {
+        { text = "KOMM", onClick = function() self:come() end },
+        { text = "FOLGEN", onClick = function() self:send({ op = "mode", mode = "follow", target = self:owner() }) end },
+        { text = "BLEIB", onClick = function() self:send({ op = "mode", mode = "stay" }) end },
+        { text = "FREI", onClick = function() self:send({ op = "mode", mode = "idle" }) end },
+        { text = "HEIM", onClick = function() self:send({ op = "mode", mode = "home" }) end },
+        { text = "WACHE", onClick = function() self:send({ op = "mode", mode = "guard" }) end },
+        { text = "PATROUILLE", onClick = function() self:send({ op = "mode", mode = "patrol" }) end },
+        { text = "SAG", onClick = function()
+            Input.open(self, { title = "Claude sagt:", maxLen = 100, onOk = function(t)
+                if t:find("%S") then self:send({ op = "say", text = t }) end
+            end })
+        end },
+        { text = e.mute and "SPRICH" or "RUHE", onClick = function() self:cmd(e.mute and "sprich" or "ruhe") end },
+    }
+    -- Zuletzt gesagt (nur so viele Zeilen, dass die Befehle darunter noch passen)
+    local gap = compact and 0 or 1
+    local room = h - y - gap - UI.flowHeight(acts, x0, w - 1)
+    if u.sayLog and #u.sayLog > 0 and room >= 1 then
+        -- klein: der letzte Satz auf bis zu 2 Zeilen, gross: die letzten 3 je 1 Zeile
+        local small = narrow or compact
+        local width = w - x0
+        for i = 1, math.min(small and 1 or 3, #u.sayLog, room) do
+            local lines = UI.wrap("\"" .. u.sayLog[i].text .. "\"", width)
+            local n = math.min(small and 2 or 1, room - i + 1)
+            for j = 1, math.min(n, #lines) do
+                local t = lines[j]
+                if j == n and #lines > n then t = t:sub(1, width - 2) .. ".." end
+                UI.text(x0, y, t:sub(1, width), (i == 1) and colors.white or colors.lightGray)
+                y = y + 1
+            end
+        end
+    end
+    y = y + gap
+    if y + UI.flowHeight(acts, x0, w - 1) <= h then
+        y = UI.flow(acts, x0, y, w - 1) + 1
+    end
+    if not compact and y + bh <= h - 1 then self:padRow(x0, y) end
+end
+
+-- Steuerkreuz (nicht abbauen: Claude faehrt nur in freie Felder)
+function Claude:padRow(x0, y)
+    local w, narrow = Kernel.w, UI.narrow()
+    local pad = { { "\24", "vor" }, { "\25", "zurueck" }, { "\27", "links" }, { "\26", "rechts" }, { "HOCH", "hoch" }, { "RUNTER", "runter" } }
+    local list = {}
+    for _, p in ipairs(pad) do
+        list[#list + 1] = { text = p[1], w = (#p[1] == 1) and 3 or nil, onClick = function() self:send({ op = "move", dir = p[2] }) end }
+    end
+    if not narrow then UI.text(x0, y, "STEUERN", colors.lightGray) end
+    return UI.flow(list, narrow and x0 or (x0 + 8), y, w - 1)
+end
+
+function Claude:drawPad(u)
+    local w, narrow = Kernel.w, UI.narrow()
+    local top = self:header(u, nil)
+    top = self:tabs(top)
+    local x0 = narrow and 1 or 2
+    UI.text(x0, top, ("Vor/zurueck/links/rechts aus Claudes Sicht."):sub(1, w - x0), colors.lightGray)
+    local y = self:padRow(x0, top + 2) + 1
+    local more = {
+        { text = "HIERHER", onClick = function() self:come() end },
+        { text = "PARKPLATZ = HIER", onClick = function() self:send({ op = "park", here = true }) end },
+        { text = "CRAFTEN", onClick = function() self:send({ op = "craft", n = 16 }) end },
+    }
+    UI.flow(more, x0, y + 1, w - 1)
+end
+
+-- KOMM: Fernbedienung mit GPS -> dorthin; sonst zum eigenen Spielernamen
+function Claude:come()
+    if REMOTE then
+        local here = Geo.here()
+        if here then return self:send({ op = "goto", x = here.x, y = here.y + 1, z = here.z }) end
+    end
+    if not self:owner() then
+        return Kernel.notify(REMOTE and "Kein GPS: Spielername in MODI > FREI eintragen" or "Besitzer fehlt: INFO > EINSTELLUNGEN", colors.orange)
+    end
+    self:send({ op = "mode", mode = "come", target = self:owner() })
+end
+
+-- ---------- Karte ----------
+local function clRot(up, x, z)
+    if up == 1 then return z, -x elseif up == 2 then return -x, -z elseif up == 3 then return -z, x end
+    return x, z
+end
+local function clUnrot(up, r, d)
+    if up == 1 then return -d, r elseif up == 2 then return -r, -d elseif up == 3 then return d, -r end
+    return r, d
+end
+local CL_ARROWS = { [0] = "\24", [1] = "\26", [2] = "\25", [3] = "\27" }
+local CL_TILE = { [" "] = { " ", "0", "f" }, ["."] = { " ", "0", "c" }, ["#"] = { " ", "0", "8" },
+                  ["~"] = { "\140", "3", "b" }, ["!"] = { "!", "0", "e" } }
+
+function Claude:mapRadius()
+    local w, h = Kernel.w, Kernel.h
+    return math.min(48, math.ceil(math.max(w, h * 1.5) / 2 * self.zoom) + 1)
+end
+
+function Claude:drawMap(u)
+    local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
+    local top = self:header(u, nil)
+    top = self:tabs(top)
+    local m = self.map
+    local legendY = h - 1
+    local mx, my, mw, mh = 1, top, w, legendY - top
+    if not m then
+        UI.empty(top + 2, "Karte wird geladen ...", "Claude schickt, was er schon kennt. Er lernt die Basis mit dem Geo Scanner.")
+        return
+    end
+    local up = tonumber(Settings.get("mapUp")) or 0
+    if up ~= 1 and up ~= 2 and up ~= 3 then up = 0 end
+    local scale = self.zoom
+    local cx, cz = m.cx, m.cz
+    if u.wpos then cx, cz = u.wpos.x, u.wpos.z end
+    local ox, oy = mx + math.floor(mw / 2), my + math.floor(mh / 2)
+    local function world(c, r)
+        local dx, dz = clUnrot(up, (c - ox) * scale, (r - oy) * scale * 1.5)
+        return math.floor(cx + dx + 0.5), math.floor(cz + dz + 0.5)
+    end
+    local function place(x, z)
+        local r, d = clRot(up, x - cx, z - cz)
+        return ox + math.floor(r / scale + 0.5), oy + math.floor(d / (scale * 1.5) + 0.5)
+    end
+    local function tileAt(x, z)
+        local row = m.rows[z - (m.cz - m.r) + 1]
+        if not row then return " " end
+        local ch = row:sub(x - (m.cx - m.r) + 1, x - (m.cx - m.r) + 1)
+        return (ch ~= "") and ch or " "
+    end
+    local s = Kernel.screen
+    for r = my, my + mh - 1 do
+        local chs, fgs, bgs = {}, {}, {}
+        for c = mx, mx + mw - 1 do
+            local x, z = world(c, r)
+            local t = CL_TILE[tileAt(x, z)] or CL_TILE[" "]
+            chs[#chs + 1], fgs[#fgs + 1], bgs[#bgs + 1] = t[1], t[2], t[3]
+        end
+        s.setCursorPos(mx, r)
+        s.blit(table.concat(chs), table.concat(fgs), table.concat(bgs))
+    end
+    local function mark(p, ch, fg, bg)
+        if not p then return end
+        local c, r = place(p.x, p.z)
+        if c >= mx and c < mx + mw and r >= my and r < my + mh then UI.text(c, r, ch, fg, bg or colors.black) return c, r end
+    end
+    for _, zn in ipairs(m.zones or {}) do
+        for _, p in ipairs({ { x = zn.x1, z = zn.z1 }, { x = zn.x2, z = zn.z1 }, { x = zn.x1, z = zn.z2 }, { x = zn.x2, z = zn.z2 } }) do
+            mark(p, "X", colors.orange)
+        end
+    end
+    for i, p in ipairs(m.wps or {}) do mark(p, (i <= 9) and tostring(i) or "+", colors.black, colors.yellow) end
+    mark(m.home, "H", colors.lightBlue)
+    if m.park and not (m.home and m.park.x == m.home.x and m.park.z == m.home.z) then mark(m.park, "P", colors.lightBlue) end
+    mark(m.center or (not REMOTE and Geo.here()) or nil, "\4", colors.white)
+    for _, mob in ipairs((u.ext and u.ext.mobs) or {}) do mark(mob, "x", colors.red) end
+    for _, p in ipairs((u.ext and u.ext.near) or {}) do
+        local c, r = mark(p, "@", colors.yellow)
+        if c and c + #p.n < mx + mw then UI.text(c + 1, r, p.n, colors.yellow) end
+    end
+    if REMOTE then mark(Geo.here(), "\7", colors.white) end
+    if u.wpos then
+        local c, r = mark(u.wpos, u.wf and CL_ARROWS[(u.wf - up) % 4] or "C", colors.black, colors.lime)
+        if c and c + 7 < mx + mw then UI.text(c + 1, r, "Claude", colors.lime) end
+    end
+    UI.text(mx + mw - 3, my, "N" .. CL_ARROWS[(0 - up) % 4], colors.lightGray)
+    -- Antippen: Menue fuer diese Stelle
+    UI.hit(mx, my, mw, mh, function(c, r)
+        local x, z = world(c, r)
+        local y = (u.wpos and u.wpos.y) or 0
+        self.pick = { x = x, y = y, z = z, c = c, r = r }
+    end)
+    -- Legende: unterste Zeile neben den Zoom-Knoepfen nimmt den Rest auf
+    local lx, ly = 1, legendY
+    if not narrow then UI.text(lx, ly, "1 Zeichen = " .. scale .. " Bl.", colors.lightGray) lx = lx + 18 end
+    for _, l in ipairs({ { " Boden ", colors.brown }, { " Wand ", colors.lightGray }, { " Wasser ", colors.blue }, { " Create ", colors.red } }) do
+        if ly == legendY and lx + #l[1] - 1 > w then lx, ly = 1, h end
+        if ly == legendY or lx + #l[1] - 1 <= w - 8 then
+            UI.text(lx, ly, l[1], (l[2] == colors.lightGray) and colors.black or colors.white, l[2])
+            lx = lx + #l[1] + 1
+        end
+    end
+    -- Aktionen unten rechts: Zoom, Punkte, Zonen
+    local zb = { { text = "-", w = 3, h = 1, onClick = function() self:onScroll(1) end },
+                 { text = "+", w = 3, h = 1, onClick = function() self:onScroll(-1) end } }
+    UI.buttonsRight(zb, h, w)
+    if self.pick then self:drawPick(u) end
+end
+
+-- Menue fuer eine angetippte Stelle der Karte
+function Claude:drawPick(u)
+    local p = self.pick
+    local w, h, bh = Kernel.w, Kernel.h, UI.bh()
+    local cw = math.min(w, 30)
+    local items = {
+        { text = "HIERHIN FLIEGEN", fn = function() self:send({ op = "goto", x = p.x, y = p.y, z = p.z }) end },
+        { text = "WEGPUNKT", fn = function() self:send({ op = "wp", action = "add", x = p.x, y = p.y, z = p.z }) self.mapT = -99 end },
+        { text = "PARKPLATZ", fn = function() self:send({ op = "park", x = p.x, y = p.y, z = p.z }) self.mapT = -99 end },
+        { text = self.zoneA and "ZONE: 2. ECKE" or "SPERRZONE: 1. ECKE", fn = function()
+            if self.zoneA then
+                self:send({ op = "zone", action = "add", a = self.zoneA, b = { x = p.x, y = p.y, z = p.z } })
+                self.zoneA, self.mapT = nil, -99
+            else
+                self.zoneA = { x = p.x, y = p.y, z = p.z }
+                Kernel.notify("Jetzt die zweite Ecke der Sperrzone antippen", colors.lightGray)
+            end
+        end },
+    }
+    local ch = #items * bh + 3
+    local x0 = math.max(1, math.min(w - cw + 1, p.c - math.floor(cw / 2)))
+    local y0 = math.max(2, math.min(h - ch, p.r - math.floor(ch / 2)))
+    UI.hit(1, 1, w, Kernel.H, function() self.pick = nil end)
+    UI.card(x0, y0, cw, ch)
+    UI.text(x0 + 1, y0, (p.x .. " " .. p.z):sub(1, cw - 6), colors.lightGray)
+    UI.button{ x = x0 + cw - 4, y = y0, w = 3, h = 1, text = "X", style = "ghost", onClick = function() self.pick = nil end }
+    for i, it in ipairs(items) do
+        UI.button{ x = x0 + 1, y = y0 + 1 + (i - 1) * bh + ((bh == 1) and 1 or 0), w = cw - 2, text = it.text,
+                   onClick = function() self.pick = nil it.fn() end }
+    end
+    UI.surface = colors.black
+end
+
+-- ---------- Modi (Einstellungen von Claude) ----------
+Claude.GROUPS = { "FREI", "PATROUILLE", "WACHE", "KAMPF", "CRAFTEN", "STIMME", "SICHERHEIT" }
+function Claude:setRows(c)
+    local rows = {}
+    local function opts(key, list)
+        local out = {}
+        for _, o in ipairs(list) do
+            out[#out + 1] = { text = o[1], style = (c[key] == o[2]) and "primary" or nil, onClick = function()
+                c[key] = o[2]
+                self:send({ op = "set", key = key, value = o[2] })
+            end }
+        end
+        return out
+    end
+    local function onoff(key) return opts(key, { { "AN", true }, { "AUS", false } }) end
+    local function row(g, label, value, buttons, color) rows[#rows + 1] = { label, value, color, buttons, g = g } end
+    local u = self:unit()
+    local e = (u and u.ext) or {}
+    row("FREI", "Wenn frei", ({ park = "parken", hover = "schweben und die Basis lernen", guard = "Wache am Parkplatz" })[c.idle] or "?",
+        opts("idle", { { "PARKEN", "park" }, { "SCHWEBEN", "hover" }, { "WACHE", "guard" } }))
+    row("FREI", "Schweb-Radius", tostring(c.hoverR) .. " Bloecke", opts("hoverR", { { "8", 8 }, { "12", 12 }, { "20", 20 }, { "32", 32 } }))
+    row("FREI", "Nachts", c.nightHome and "zum Parkplatz" or "wie am Tag", onoff("nightHome"))
+    row("FREI", "Parkplatz", c.park and "eigener (Karte)" or "Basis (Spind)", {
+        { text = "BASIS", onClick = function() c.park = false self:send({ op = "set", key = "park", value = false }) end },
+        { text = "HIER", onClick = function() self:send({ op = "park", here = true }) self.cfgT = -99 end } })
+    row("PATROUILLE", "Wegpunkte", tostring(e.wp or 0) .. " (Karte antippen oder $claude punkt)", {
+        { text = "LOESCHEN", style = "danger", confirm = "cl-wp", onClick = function() self:send({ op = "wp", action = "clear" }) self.mapT = -99 end } })
+    row("PATROUILLE", "Pause je Punkt", tostring(c.patrolWait) .. " s", opts("patrolWait", { { "0", 0 }, { "5", 5 }, { "15", 15 }, { "30", 30 } }))
+    row("PATROUILLE", "Starten", "", { { text = "PATROUILLE", style = "primary", onClick = function() self:send({ op = "mode", mode = "patrol" }) end } })
+    row("WACHE", "Radius", tostring(c.guardR) .. " Bloecke um die Wache", opts("guardR", { { "6", 6 }, { "10", 10 }, { "16", 16 } }))
+    row("WACHE", "Wache hier", "", { { text = "WACHE", style = "primary", onClick = function() self:send({ op = "mode", mode = "guard" }) end } })
+    row("KAMPF", "Monster angreifen", c.mobs and "ja (Diamantschwert)" or "nein", onoff("mobs"))
+    row("KAMPF", "Creeper", c.creepers and "auch" or "in Ruhe lassen", onoff("creepers"))
+    row("KAMPF", "Folge-Abstand", tostring(c.followDist) .. " Bloecke", opts("followDist", { { "2", 2 }, { "3", 3 }, { "5", 5 } }))
+    row("CRAFTEN", "Fackeln setzen", c.torches and "selbst, wenn es dunkel ist" or "nur anbieten", onoff("torches"))
+    row("CRAFTEN", "Fackel-Vorrat", tostring(c.torchStock) .. (e.torches and ("  (hat " .. e.torches .. ")") or ""),
+        opts("torchStock", { { "0", 0 }, { "16", 16 }, { "32", 32 }, { "64", 64 } }))
+    row("CRAFTEN", "Selbst craften", c.autoCraft and "ja, im Leerlauf am Spind" or "nur auf Befehl", onoff("autoCraft"))
+    row("CRAFTEN", "Spind", ({ down = "Kiste unter der Basis", up = "Kiste ueber der Basis", back = "Kiste hinter der Basis" })[c.locker] or "?",
+        opts("locker", { { "UNTEN", "down" }, { "OBEN", "up" }, { "HINTEN", "back" } }))
+    row("CRAFTEN", "Jetzt", "16 Fackeln aus Kohle + Stoecken/Brettern", { { text = "CRAFTEN", style = "primary", onClick = function() self:send({ op = "craft", n = 16 }) end } })
+    row("STIMME", "Gespraechig", ({ [0] = "still", "wenig", "normal", "viel" })[c.talk] or "?",
+        opts("talk", { { "STILL", 0 }, { "WENIG", 1 }, { "NORMAL", 2 }, { "VIEL", 3 } }))
+    row("STIMME", "Begruessen", c.greet and "ja" or "nein", onoff("greet"))
+    row("STIMME", "Stups", c.poke and ("selten: " .. table.concat(c.pokeTargets or {}, ", ")) or "aus", onoff("poke"))
+    row("STIMME", "Stups-Chance", "1 von " .. tostring(c.pokeOdds) .. " Begegnungen (hoechstens 1x am Tag)",
+        opts("pokeOdds", { { "1/20", 20 }, { "1/50", 50 }, { "1/150", 150 } }))
+    row("SICHERHEIT", "Leine", tostring(c.leash) .. " Bloecke um " .. (c.center and "den PC" or "die Basis"),
+        opts("leash", { { "32", 32 }, { "64", 64 }, { "100", 100 } }))
+    if not REMOTE then
+        local here = Geo.here()
+        row("SICHERHEIT", "Mitte der Leine", c.center and "PC" or "Basis von Claude", {
+            { text = "PC", disabled = not here, onClick = function() self:send({ op = "center", x = here.x, y = here.y, z = here.z }) self.cfgT = -99 end },
+            { text = "BASIS", onClick = function() self:send({ op = "set", key = "center", value = false }) end } })
+    end
+    row("SICHERHEIT", "Create-Abstand", tostring(c.createGap) .. " Bloecke (Werkstationen erlaubt)", opts("createGap", { { "2", 2 }, { "3", 3 }, { "4", 4 } }))
+    row("SICHERHEIT", "Sperrzonen", tostring(e.zn or 0) .. " (KARTE antippen)", {
+        { text = "LOESCHEN", style = "danger", confirm = "cl-zn", onClick = function() self:send({ op = "zone", action = "clear" }) self.mapT = -99 end } })
+    row("SICHERHEIT", "Karte", tostring(e.kn or 0) .. " bekannte Felder", {
+        { text = "VERGESSEN", style = "danger", confirm = "cl-forget", onClick = function() self:send({ op = "forget" }) self.mapT = -99 end } })
+    if REMOTE then
+        row("FREI", "Dein Spielername", self:owner() or "fehlt (fuer KOMM ohne GPS und FOLGEN)", {
+            { text = "AENDERN", onClick = function()
+                Input.open(self, { title = "Dein Spielername:", text = self:owner() or "", maxLen = 16, filter = "[^%w_]", onOk = function(t)
+                    Settings.set("owner", t)
+                end })
+            end } }, self:owner() and colors.lightGray or colors.orange)
+    end
+    return rows
+end
+
+function Claude:drawModes(u)
+    local w, narrow = Kernel.w, UI.narrow()
+    local top = self:header(u, nil)
+    top = self:tabs(top)
+    local c = self.cfg
+    if not c then UI.empty(top + 2, "Einstellungen werden geladen ...", "Claude muss eingeschaltet und in Funkreichweite sein.") return end
+    -- Gruppen
+    local need = -1
+    for _, g in ipairs(Claude.GROUPS) do need = need + #g + 3 end
+    if need <= w - 2 then
+        local list = {}
+        for _, g in ipairs(Claude.GROUPS) do
+            list[#list + 1] = { text = g, h = 1, style = (g == self.group) and "primary" or nil, onClick = function() self.group, self.modePage.page = g, 1 end }
+        end
+        top = UI.flow(list, narrow and 1 or 2, top, w - 1) + 1
+    else
+        UI.button{ x = 1, y = top, w = w, h = 1, text = self.group .. " \16", onClick = function()
+            for i, g in ipairs(Claude.GROUPS) do
+                if g == self.group then self.group = Claude.GROUPS[i % #Claude.GROUPS + 1] break end
+            end
+            self.modePage.page = 1
+        end }
+        top = top + 2
+    end
+    local rows = {}
+    for _, r in ipairs(self:setRows(c)) do if r.g == self.group then rows[#rows + 1] = r end end
+    UI.settingsList(self.modePage, rows, top)
+end
+
+-- ---------- Log: Besucher und Ereignisse ----------
+function Claude:drawLog(u)
+    local w, narrow = Kernel.w, UI.narrow()
+    local top = self:header(u, nil)
+    top = self:tabs(top)
+    local log = self.log
+    if not log then UI.empty(top + 2, "Log wird geladen ...") return end
+    local items = {}
+    for i = #log.visits, 1, -1 do
+        local v = log.visits[i]
+        local dur = v.d and (math.max(1, math.floor((v.d - v.a) / 60)) .. " min") or "noch da"
+        items[#items + 1] = { t = v.a, text = v.n .. "  (" .. dur .. ")", color = v.d and colors.white or colors.lime, kind = "BESUCH" }
+    end
+    for i = #log.list, 1, -1 do
+        local e = log.list[i]
+        if e.k ~= "sagt" or self.showSaid then
+            items[#items + 1] = { t = e.t, text = e.text, color = (e.k == "kampf") and colors.red or ((e.k == "sagt") and colors.lightGray or colors.white), kind = e.k:upper() }
+        end
+    end
+    table.sort(items, function(a, b) return a.t > b.t end)
+    local bw = narrow and 7 or 10
+    local head = narrow and ("SPIELER " .. #log.people .. "  MOBS " .. log.kills) or ("SPIELER " .. #log.people .. "  MONSTER " .. log.kills)
+    UI.text(narrow and 1 or 2, top, head:sub(1, w - bw - 2), colors.lightGray)
+    UI.button{ x = w - bw, y = top, w = bw, h = 1, text = narrow and (self.showSaid and "-SAGT" or "+SAGT") or (self.showSaid and "OHNE SAGT" or "MIT SAGT"),
+               style = "ghost", onClick = function() self.showSaid = not self.showSaid end }
+    UI.list(self.logPage, items, top + 2, 1, function(it, y)
+        local x0 = narrow and 1 or 2
+        local when = clAgo(it.t)
+        UI.text(x0, y, when, colors.lightGray)
+        local tx = x0 + 7
+        if not narrow then UI.text(tx, y, it.kind:sub(1, 7), colors.orange) tx = tx + 8 end
+        UI.text(tx, y, it.text:sub(1, w - tx), it.color)
+    end)
+end
+
+-- ---------- Einrichten: noch kein Claude ----------
+function Claude:drawSetup()
+    local w, h, bh, narrow = Kernel.w, Kernel.h, UI.bh(), UI.narrow()
+    local top = UI.header("CLAUDE", not narrow and "Begleit-Droide" or nil)
+    if REMOTE or READONLY then
+        UI.empty(top + 2, "Kein Claude in Reichweite",
+                 "Claude wird am PC eingerichtet (CLAUDE > Turtle waehlen). Danach meldet er sich hier von selbst.")
+        return
+    end
+    local sw = Fleets and Fleets.UP
+    local list = {}
+    if sw then
+        for id, e in pairs(sw.store) do if e.online then list[#list + 1] = { id = id, e = e } end end
+        table.sort(list, function(a, b) return a.id < b.id end)
+    end
+    local y = top
+    local intro = UI.wrap("Eine Turtle wird zu Claude: Agent 5.4, Ender Modem, Diamantschwert. Im Inventar Chat Box, Player Detector, " ..
+                          "Environment Detector, Geo Scanner, Kompass, Speaker, Chunky, Werkbank und Kohle. Spind: Kiste unter der Basis.", w - 4)
+    for _, l in ipairs(intro) do
+        if y < h - 6 then UI.text(2, y, l, colors.lightGray) y = y + 1 end
+    end
+    y = y + 1
+    if #list == 0 then
+        UI.text(2, y, "Keine Turtle online (Basis mit GPS setzen, TURTLE-DISK).", colors.orange)
+        return
+    end
+    UI.list(self.setupPage, list, y, bh + 1, function(it, ry)
+        local tx, xr = UI.rowCard(ry, bh)
+        local e = it.e
+        local old = verLess(e.v, "5.4")
+        local need = {}
+        for _, t in ipairs({ "chat", "player", "env", "scanner" }) do if not (e.toolSet and e.toolSet[t]) then need[#need + 1] = t end end
+        local bx = UI.buttonsRight({ { text = narrow and "CLAUDE" or "ZU CLAUDE MACHEN", style = "primary", confirm = "cl-make-" .. it.id,
+            onClick = function()
+                local text, failed = sw:runProgram(it.id, "claude", { owner = self:owner() }, true)
+                Kernel.notify("#" .. it.id .. ": " .. tostring(text), failed and colors.red or colors.lime)
+            end } }, ry, xr)
+        local name = "#" .. it.id .. " " .. (sw:nameOf(it.id, e) or "")
+        UI.text(tx, ry, name:sub(1, bx - tx - 1), colors.white)
+        if not narrow then
+            local hint = old and "Agent zu alt: erst SCHWARM > UPDATE" or ((#need > 0) and ("fehlt: " .. table.concat(need, ", ")) or ("Agent " .. tostring(e.v)))
+            UI.text(tx + 14, ry, hint:sub(1, math.max(0, bx - tx - 16)), (old or #need > 0) and colors.orange or colors.lightGray)
+        end
+    end)
+end
+
+Apps.register(Claude)
+Kernel.claude = Claude
 
 -- ======================================================================
 -- [8] DATEN
@@ -11990,6 +15317,11 @@ Sys.HELP = {
     luaapps = { "Deine Programme in /scripts, mit Ordnern.",
                 "START fuehrt aus, EDIT oeffnet den Editor, DEL legt in den Papierkorb.",
                 "Ordner turtle: Programme fuer die Turtles (Start in SCHWARM)." },
+    claude = { "Claude ist der Begleit-Droide der Basis: eine Turtle mit Schwert und allen Werkzeugen.",
+               "Im Spiel: $claude komm, folge, bleib, heim, frei, wache, patrouille, hilfe ($ = unsichtbar).",
+               "STATUS: Befehle und Steuerkreuz. KARTE: was Claude kennt; antippen = hinfliegen, Wegpunkt, Sperrzone.",
+               "MODI: wie Claude sich verhaelt (frei, Patrouille, Wache, Kampf, Crafting, Stimme, Sicherheit).",
+               "Er baut nie etwas ab, bleibt ueber Wasser, 100 Bloecke beim PC und weg von Create-Maschinen." },
     info  = { "Geraet, Funk, Speicher und Erweiterungen auf einen Blick.",
               "EINSTELLUNGEN: Passwoerter, Design, Lager, Schwarm.",
               "SYSTEM: Check, Update, Backup, Papierkorb, Einrichtung und sicherer Modus.",
@@ -12728,6 +16060,15 @@ function Info:setPassword(text)
                 e.keyOld = true
             end
         end
+        -- Claude (eigene App, nicht im Schwarm) bekommt den Schluessel genauso
+        for id, u in pairs(Kernel.claude and Kernel.claude.units or {}) do
+            if u.online and viaAir then
+                Net.send(id, { t = "KEY", key = Net.toHex(key), default = isDefault, since = since })
+                sent = sent + 1
+            else
+                waiting = waiting + 1
+            end
+        end
     end
     Net.setKey(key, isDefault, since)
     Net.save(CONFIG.keyFile)
@@ -12925,15 +16266,21 @@ function Info:drawSettings()
     top = top + 2
     local rows = {}
     for _, r in ipairs(all) do if r.g == self.setGroup then rows[#rows + 1] = r end end
-    -- schmal (Handy, Pocket): Name, Wert und Knoepfe je in einer eigenen Zeile;
-    -- PC ohne Monitor: Name + Knoepfe, darunter der Wert; Touch-Monitor: eine Zeile.
+    UI.settingsList(self.setPage, rows, top)
+end
+
+-- Einstellungs-Liste: rows = { { Name, Wert, Farbe, { Knoepfe } }, ... }
+-- schmal (Handy, Pocket): Name, Wert und Knoepfe je in einer eigenen Zeile;
+-- PC ohne Monitor: Name + Knoepfe, darunter der Wert; Touch-Monitor: eine Zeile.
+function UI.settingsList(state, rows, top)
+    local bh, narrow = UI.bh(), UI.narrow()
     local mode = narrow and "stack" or ((bh == 1) and "two" or "one")
     local ch = (mode == "stack") and 3 or ((mode == "two") and 2 or bh)
-    UI.list(self.setPage, rows, top, ch + 1, function(r, y)
+    UI.list(state, rows, top, ch + 1, function(r, y)
         local tx, xr = UI.rowCard(y, ch)
         if mode ~= "one" then
             local by = (mode == "stack") and (y + 2) or y
-            local bx = (#r[4] > 0) and UI.buttonsRight(r[4], by, xr) or (xr + 2)
+            local bx = (#r[4] > 0) and UI.buttonsRight(r[4], by, xr, (mode == "stack") and (tx - 1) or nil) or (xr + 2)
             UI.text(tx, y, r[1]:sub(1, ((mode == "stack") and xr or (bx - 2)) - tx + 1), colors.white)
             UI.text(tx, y + 1, tostring(r[2]):sub(1, xr - tx + 1), r[3] or colors.lightGray)
             return
@@ -13620,6 +16967,9 @@ local function netRoutine()
         if proto == Net.proto and type(id) == "number" then
             local payload, from = Net.open(msg)
             local fleet = payload and Fleets[payload.t]
+            if payload and Kernel.claude and (payload.t == "CLD" or (payload.t == "UP" and payload.role == "claude")) then
+                fleet = Kernel.claude
+            end
             if fleet and from == id then
                 local ok, changed = pcall(fleet.receive, fleet, id, payload)
                 if ok and changed and (Kernel.app == fleet or Kernel.app.id == "home") then
@@ -13736,7 +17086,8 @@ local function main()
     end
     if PHONE then
         -- Handy fuer Freunde: Lager, Notizen, Rechner, Nether, Web, Games, Info - keine Turtles.
-        for _, id in ipairs({ "swarm", "pcraft", "data", "shell", "luaapps" }) do
+        Kernel.claude = nil
+        for _, id in ipairs({ "swarm", "pcraft", "data", "shell", "luaapps", "claude" }) do
             local app = Apps.byId[id]
             if app then
                 Apps.byId[id] = nil
@@ -13749,9 +17100,23 @@ local function main()
             Net.setKey(Net.derive(CONFIG.phonePassword), true)
         end
         UI.layoutCache = nil
+    elseif EDITION == "claude" then
+        -- Claude-Fernbedienung: nur Claude (als Startseite) und INFO.
+        for _, app in ipairs({ table.unpack(Apps.list) }) do
+            if app.id ~= "boot" and app.id ~= "claude" and app.id ~= "info" then
+                Apps.byId[app.id] = nil
+                for i, a in ipairs(Apps.list) do if a == app then table.remove(Apps.list, i) break end end
+            end
+        end
+        local cl = Apps.byId.claude
+        cl.tab = false
+        Apps.byId.home = cl
+        for k in pairs(Fleets) do Fleets[k] = nil end
+        UI.layoutCache = nil
     elseif READONLY then
         -- Pocket = Fortschritts-Tablet: nur Anzeigen, keine Werkzeuge.
-        for _, id in ipairs({ "pcraft", "data", "web", "shell", "luaapps", "notes", "editor", "games" }) do
+        Kernel.claude = nil
+        for _, id in ipairs({ "pcraft", "data", "web", "shell", "luaapps", "notes", "editor", "games", "claude" }) do
             local app = Apps.byId[id]
             if app then
                 Apps.byId[id] = nil
