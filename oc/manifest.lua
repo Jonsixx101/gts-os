@@ -19,7 +19,7 @@
     { path = "apps/files.lua", size = 11430, sha = "78044a3b4be121c3a76a5340eb27b570d999b06a2af7ceadde889e4d5b33604f" },
     { path = "apps/games.lua", size = 11253, sha = "51acee2f591725c7ff6fa98d2613e5374fe5778623bfcf4c16bbf10b87a67054" },
     { path = "apps/home.lua", size = 8007, sha = "a5fda3d64b1cb2216d57506ac6762bbf6d24a7e5b711c8caf160e0af1de38ced" },
-    { path = "apps/info.lua", size = 19010, sha = "6ecd7ddf42fc2ebf2d0af9d768d66f30017fcc5fc122ac362979209db2a395cd" },
+    { path = "apps/info.lua", size = 19326, sha = "65a36ed96daeea4aa1f26f167593ab7eadd1a3dc6157a2bef37d2cf54213ac0c" },
     { path = "apps/ki.lua", size = 23763, sha = "3df43414a8a2806583a9e36d2fa9e0ef259642cdb1a6c2e203a8e0c0ff624721" },
     { path = "apps/notes.lua", size = 6468, sha = "8a8960d407bf733813418bded5208fd0f25acce4999959b115797ea21358a97a" },
     { path = "apps/setup.lua", size = 6026, sha = "96cffb67237357647b5d2e827bfe831e6a90e85eaf7ed4e940a551ed308695b8" },

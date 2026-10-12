@@ -124,6 +124,8 @@ local function drawSettings(x, y, w, h)
             K.askAdmin("Admin-Code (bisher)", function() codeTwice("Admin-Code", "adminHash") end) end } }, not K.set.adminHash and C.warn)
         r("Auto-Sperre", (K.set.autoLock or 0) > 0 and (K.set.autoLock .. " min") or "aus", choice("autoLock", { 2, 5, 10, 30, 0 }, function(v) return v == 0 and "AUS" or tostring(v) end))
         r("Jetzt sperren", nil, { { text = "SPERREN", style = "secondary", onClick = function() K.lock() end } })
+        r("Sprung/Autopilot", K.set.jumpAdmin and "nur mit Admin-Code" or "Sprung mit Bestätigung + Countdown", { { text = K.set.jumpAdmin and "LOCKERN" or "ADMIN-CODE", style = "subtle",
+            onClick = function() K.askAdmin("Admin-Code", function() K.setting("jumpAdmin", not K.set.jumpAdmin) end) end } })
         r("Vertraute Spieler", #(K.set.trusted or {}) > 0 and table.concat(K.set.trusted, ", ") or "keine",
           { { text = "+", w = 3, style = "subtle", onClick = function()
               UI.prompt({ title = "Spielername", maxLen = 16, onOk = function(t) local l = K.set.trusted or {} l[#l + 1] = t K.setting("trusted", l) end })
