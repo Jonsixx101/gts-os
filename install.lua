@@ -1,4 +1,174 @@
 -- ======================================================================
+-- GTS OS - Installer (ComputerCraft und OpenComputers)       by Jonsi
+-- ComputerCraft:  wget run https://raw.githubusercontent.com/Jonsixx101/gts-os/main/install.lua
+-- OpenComputers:  wget -f https://raw.githubusercontent.com/Jonsixx101/gts-os/main/install.lua /tmp/i.lua
+--                 /tmp/i.lua
+-- ======================================================================
+-- ---------------------------------------------------------------------
+-- OpenComputers (MC 1.7.10): GTS OS bzw. Robot-Einheit installieren
+-- Im Rechner/Robot (OpenOS, Internet Card):
+--   wget -f https://raw.githubusercontent.com/Jonsixx101/gts-os/main/install.lua /tmp/i.lua
+--   /tmp/i.lua
+-- ---------------------------------------------------------------------
+do
+local okOC, component = pcall(require, "component")
+if okOC and type(component) == "table" and component.isAvailable then
+    local computer = require("computer")
+    local fs = require("filesystem")
+    local BASE = "https://raw.githubusercontent.com/Jonsixx101/gts-os/main/oc/"
+    local gpu = component.isAvailable("gpu") and component.gpu or nil
+    local function color(c) if gpu and gpu.getDepth() > 1 then pcall(gpu.setForeground, c) end end
+    local function say(text, c) color(c or 0xFFFFFF) print(text) color(0xFFFFFF) end
+    local GREEN, RED, YELLOW, GREY = 0x3DDC84, 0xFF5A5F, 0xF5A623, 0x9AA3B5
+    local function readLine(mask)
+        local line
+        local okT, term = pcall(require, "term")
+        if okT and term and term.read then
+            local ok, r = pcall(term.read, {}, true, nil, mask and "*" or nil)
+            if ok then line = r end
+        end
+        if line == nil then line = io.read() end
+        return (tostring(line or ""):gsub("[\r\n]+$", ""))
+    end
+    local function ask(q, default, mask)
+        color(YELLOW) io.write(q .. (default and (" [" .. default .. "]") or "") .. " ") color(0xFFFFFF)
+        local a = readLine(mask)
+        if a == "" and default then a = default end
+        return a
+    end
+    local function hex(s) return (s:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
+
+    say("GTS OS Installer · OpenComputers", GREEN)
+    if not component.isAvailable("internet") then say("Es fehlt eine Internet Card.", RED) return end
+    local inet = component.internet
+    local function get(path)
+        local ok, h = pcall(inet.request, BASE .. path .. "?t=" .. math.floor(computer.uptime() * 1000))
+        if not ok or not h then return nil, tostring(h) end
+        local dl = computer.uptime() + 30
+        while true do
+            local okc, done = pcall(h.finishConnect)
+            if not okc then return nil, tostring(done) end
+            if done then break end
+            if computer.uptime() > dl then return nil, "keine Antwort" end
+            os.sleep(0.1)
+        end
+        local okr, code = pcall(h.response)
+        if okr and tonumber(code) and tonumber(code) >= 400 then pcall(h.close) return nil, "HTTP " .. code end
+        local parts = {}
+        while true do
+            local okd, chunk = pcall(h.read, 8192)
+            if not okd then pcall(h.close) return nil, tostring(chunk) end
+            if chunk == nil then break end
+            if chunk == "" then os.sleep(0.05) else parts[#parts + 1] = chunk end
+            if computer.uptime() > dl then pcall(h.close) return nil, "zu langsam" end
+        end
+        pcall(h.close)
+        return table.concat(parts)
+    end
+    local function write(path, body)
+        local dir = path:match("^(.*)/[^/]*$")
+        if dir and dir ~= "" and not fs.exists(dir) then fs.makeDirectory(dir) end
+        local h, err = io.open(path, "w")
+        if not h then return false, err end
+        h:write(body)
+        h:close()
+        return true
+    end
+    local function startup(line)
+        local rc = "/home/.shrc"
+        local old = ""
+        local h = io.open(rc, "r")
+        if h then old = h:read("*a") or "" h:close() end
+        local out = {}
+        for l in (old .. "\n"):gmatch("(.-)\n") do
+            if l ~= "" and not l:match("^/gts/") then out[#out + 1] = l end
+        end
+        out[#out + 1] = line
+        write(rc, table.concat(out, "\n") .. "\n")
+    end
+
+    say("Lade Dateiliste ...", GREY)
+    local txt, err = get("manifest.lua")
+    if not txt then say("Download fehlgeschlagen: " .. tostring(err), RED) return end
+    local f = load("return " .. txt:gsub("^%s*%-%-[^\n]*\n", ""):gsub("^%s*%-%-[^\n]*\n", ""), "=manifest", "t", {})
+    local okm, man = pcall(f or error)
+    if not okm or type(man) ~= "table" or type(man.files) ~= "table" then say("Dateiliste unlesbar", RED) return end
+    local data = component.isAvailable("data") and component.data or nil
+
+    local function fetchFile(entry)
+        local body, e = get(entry.path)
+        if not body then return nil, e end
+        if entry.size and #body ~= entry.size then return nil, "Größe stimmt nicht" end
+        if data and entry.sha and hex(data.sha256(body)) ~= entry.sha then return nil, "Prüfsumme falsch" end
+        return body
+    end
+
+    if computer.isRobot and computer.isRobot() then
+        -- Robot: nur den Lader + Schwarm-Zugang
+        say("Robot erkannt - Einrichtung als Schwarm-Einheit (GTS OS " .. man.version .. ")", GREEN)
+        if not data then say("Der Robot braucht eine Data Card (Tier 2 für AES).", RED) return end
+        local modem = component.isAvailable("modem") and component.modem
+        if not modem or not modem.isWireless() then say("Der Robot braucht eine Wireless Network Card.", RED) return end
+        local entry
+        for _, e in ipairs(man.files) do if e.path == "units/loader.lua" then entry = e end end
+        if not entry then say("Lader fehlt in der Dateiliste", RED) return end
+        local body, e = fetchFile(entry)
+        if not body then say("Lader: " .. tostring(e), RED) return end
+        local pw = ask("Schwarm-Passwort (wie am GTS OS):", nil, true)
+        if pw == "" then say("Abgebrochen", RED) return end
+        local port = tonumber(ask("Funk-Port:", "4711")) or 4711
+        local name = ask("Name des Robots:", "Robot"):sub(1, 16)
+        -- Schluessel wie im GTS OS (net.lua: N.derive)
+        local k = data.sha256("GTS-OC-1|" .. pw)
+        for _ = 1, 64 do k = data.sha256(k .. pw) end
+        write("/gts/units/loader.lua", body)
+        write("/gts/unit.cfg", "GTS1|" .. hex(k) .. "|" .. port .. "|" .. name)
+        startup("/gts/units/loader.lua")
+        say("Fertig. Der Robot startet neu und meldet sich im GTS OS (DROHNEN).", GREEN)
+        say("Zu Hause: auf eine Kiste stellen (Abladen nach unten), Charger daneben.", GREY)
+        os.sleep(2)
+        computer.shutdown(true)
+        return
+    end
+
+    -- PC / Server: GTS OS komplett
+    local need = 0
+    for _, e in ipairs(man.files) do need = need + (e.size or 0) end
+    local hdd = fs.get("/")
+    local free = hdd and (hdd.spaceTotal() - hdd.spaceUsed()) or math.huge
+    say("GTS OS " .. man.version .. " für OpenComputers - " .. #man.files .. " Dateien, " .. math.floor(need / 1024) .. " KB", GREEN)
+    if free < need + 32768 then say("Zu wenig Platz auf der Festplatte (" .. math.floor(free / 1024) .. " KB frei).", RED) return end
+    if not component.isAvailable("gpu") or not component.isAvailable("screen") then say("Hinweis: Grafikkarte/Bildschirm fehlt.", YELLOW) end
+    if not data then say("Hinweis: ohne Data Card kein verschlüsselter Funk (Drohnen brauchen sie).", YELLOW) end
+    local stage = "/gts/.install"
+    if fs.exists(stage) then fs.remove(stage) end
+    for i, e in ipairs(man.files) do
+        io.write(string.format("[%2d/%2d] %s ", i, #man.files, e.path))
+        local body, er = fetchFile(e)
+        if not body then say("FEHLER: " .. tostring(er), RED) say("Nichts geändert - bitte nochmal versuchen.", RED) return end
+        local ok, werr = write(stage .. "/" .. e.path, body)
+        if not ok then say("FEHLER: " .. tostring(werr), RED) return end
+        say("ok", GREEN)
+    end
+    -- alles geladen: einsetzen (Daten in /gts/data bleiben unberuehrt)
+    for _, e in ipairs(man.files) do
+        local dst = "/gts/" .. e.path
+        if fs.exists(dst) then fs.remove(dst) end
+        local dir = dst:match("^(.*)/[^/]*$")
+        if dir and not fs.exists(dir) then fs.makeDirectory(dir) end
+        fs.rename(stage .. "/" .. e.path, dst)
+    end
+    fs.remove(stage)
+    startup("/gts/boot.lua")
+    say("GTS OS ist installiert. Start beim Hochfahren ist eingerichtet.", GREEN)
+    say("Erster Start: Einrichtung mit Name, Sperrcode, Admin-Code und Schwarm-Passwort.", GREY)
+    local a = ask("Jetzt neu starten? (j/n)", "j")
+    if a:lower():sub(1, 1) == "j" then computer.shutdown(true) end
+    return
+end
+end
+-- @@CC@@
+-- ======================================================================
 -- GTS OS - Installer                                          by Jonsi
 -- Im Computer eintippen:
 --   wget run https://raw.githubusercontent.com/Jonsixx101/gts-os/main/install.lua

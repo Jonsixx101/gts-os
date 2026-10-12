@@ -17,6 +17,37 @@ Der Installer erkennt das Geraet (PC, Pocket: Tablet, Phone oder Claude-Fernbedi
 passende Datei, prueft sie und richtet sie als `startup.lua` ein. Turtles danach mit
 `P` das Schwarm-Passwort geben - oder bequemer am PC: DATEN > TURTLE-DISK.
 
+## OpenComputers (Minecraft 1.7.10) - neu: GTS OS 1.0 fuer OC
+
+Eigene Fassung im Ordner `oc/` fuer OpenComputers (im Simulator gegen die OC-API getestet, Lua 5.2 und 5.3 - im Spiel noch nicht),
+gebaut fuer Star-Wars-/Faction-Server mit WarpDrive. Gleiche Bedienung wie am CC-PC, aber
+modular (Apps werden nur bei Bedarf geladen) und mit 16 exakt gesetzten Farben je Thema.
+
+**Installieren** (im OC-Rechner mit Internet Card, OpenOS auf der Festplatte):
+
+```
+wget -f https://raw.githubusercontent.com/Jonsixx101/gts-os/main/install.lua /tmp/i.lua
+/tmp/i.lua
+```
+
+Derselbe `install.lua` erkennt OpenComputers selbst. Auf einem **Robot** richtet er nur den
+GTS-Lader ein (Schwarm-Passwort, Name) - der Robot meldet sich dann in der DROHNENZENTRALE.
+**Drohnen** bekommen eine EEPROM: DROHNEN > EINRICHTEN > GTS-LADER SCHREIBEN.
+
+| App | Was |
+|---|---|
+| HOME | Uebersicht: Einheiten, Energie, RAM, Funk, Meldungen, Besucher |
+| DROHNEN | Drohnenzentrale: Drohnen (Ziel, Heim, Patrouille, Wache, Kurier, Chunkloader, Bewegungssensor) und Robots (Abbauen, Scan, Abladen), Karte, Wegpunkte, Besucher-Log |
+| SCHIFF | WarpDrive: Bruecke, Sprungplaner (relativ oder Zielkoordinaten), Radar mit Lagebild, Kontakt-Gedaechtnis, Lauschstation, Erkundungsflug (Autopilot + Radar), Tarnung. Erscheint nur mit WarpDrive-Geraeten |
+| SYSTEM | Rechner-Info, System-Check, Einstellungen, Meldungen, Update, Backup, Wartung |
+| NOTIZEN, RECHNER, DATEIEN, SPIELE | Merkzettel, Rechner + Umrechner, Dateien mit Editor, Snake + Asteroiden |
+| KI | Claude ueber die API (eigener API-Schluessel, Tageslimit); veraendernde Aktionen nur nach Bestaetigung |
+| SHELL | OpenOS-Shell, Lua-Konsole, Programme - nur mit Admin-Code |
+
+Mindestens: Gehaeuse T3, CPU T2, RAM 2x T2.5, Grafikkarte + Bildschirm T2 (80x25), Festplatte,
+Wireless-Karte T2, Data Card T2. Empfohlen: CPU T3, RAM 2x T3.5, Grafik + Bildschirm T3 (160x50),
+Internet Card. Updates: SYSTEM > UPDATE (liest `oc/manifest.lua`).
+
 ## Dateien
 
 | Datei | Wohin |

@@ -1,0 +1,95 @@
+-- GTS-Lader (EEPROM, hoechstens 4 KB): meldet sich beim GTS OS, bekommt das
+-- Programm per Funk (gesiegelt, Pruefsumme) und startet es.
+-- EEPROM-Daten: "GTS1|<Schluessel hex>|<Port>|<Name>"
+local cp = component or require("component")
+local pc = computer or require("computer")
+local function first(t) for a in cp.list(t) do return cp.proxy(a) end end
+local ee, mo, da = first("eeprom"), first("modem"), first("data")
+local dr = first("drone") or first("robot")
+local function say(s) if dr and dr.setStatusText then pcall(dr.setStatusText, s) end end
+local cf = io and io.open and io.open("/gts/unit.cfg")
+local kh, port, name = (cf and cf:read("*a") or ee.getData() or ""):match("^GTS1|(%x+)|(%d+)|?(.-)%s*$")
+if cf then cf:close() end
+if not (kh and mo and da) then say("GTS: Daten/Karte fehlt") error("GTS: EEPROM, Modem oder Data Card fehlt") end
+port = tonumber(port)
+local key = kh:gsub("%x%x", function(x) return string.char(tonumber(x, 16)) end)
+local h = da.sha256
+local E, M = h("E" .. key):sub(1, 16), h("M" .. key)
+local tf = cp.proxy(pc.tmpAddress())
+local lc, seen = 0, {}
+local function now()
+  local f = tf.open("/c", "w") tf.write(f, "t") tf.close(f)
+  return tf.lastModified("/c")
+end
+local function sl(src, b) return h(M .. h(M .. src .. b)):sub(1, 16) end
+local function ser(v)
+  local t = type(v)
+  if t == "string" then return (string.format("%q", v):gsub("\\\n", "\\n")) end
+  if t == "table" then
+    local o = {}
+    for k, x in pairs(v) do o[#o + 1] = "[" .. ser(k) .. "]=" .. ser(x) end
+    return "{" .. table.concat(o, ",") .. "}"
+  end
+  if t == "number" then return string.format("%.17g", v) end
+  return tostring(v)
+end
+local function pack(t, enc)
+  local b = ser(t)
+  local c = now() * 1000
+  if c <= lc then c = lc + 1 end
+  lc = c
+  local f = "G1" .. (enc and "E" or "S") .. string.format("%016.0f", c)
+  if enc then local iv = da.random(16) f = f .. iv .. da.encrypt(b, E, iv) else f = f .. b end
+  return f .. sl(mo.address, f)
+end
+local function unpack(f, src)
+  if type(f) ~= "string" or #f < 35 or f:sub(1, 2) ~= "G1" then return end
+  local b = f:sub(1, -17)
+  if sl(src, b) ~= f:sub(-16) then return end
+  local c = tonumber(f:sub(4, 19))
+  if not c or (seen[src] and c <= seen[src]) or (not seen[src] and math.abs(c / 1000 - now()) > 120000) then return end
+  local x = b:sub(20)
+  if f:sub(3, 3) == "E" then
+    if not da.decrypt then return end
+    local ok, p = pcall(da.decrypt, b:sub(36), E, b:sub(20, 35)) if not ok then return end x = p
+  end
+  local fn = load("return " .. x, "=n", "t", {})
+  local ok, v = pcall(fn or error)
+  if ok and type(v) == "table" and (v.to == nil or v.to == mo.address) then seen[src] = c return v end
+end
+mo.open(port)
+if mo.setStrength then mo.setStrength(400) end
+local caps = {}
+for _, t in pairs(cp.list()) do caps[t] = true end
+local kind = cp.list("drone")() and "drone" or (cp.list("robot")() and "robot" or "mc")
+local ctx = { modem = mo, data = da, port = port, pack = pack, unpack = unpack, ser = ser, now = now, eeprom = ee,
+              name = name, kind = kind, caps = caps, aes = da.encrypt ~= nil, say = say }
+while true do
+  say("GTS: suche OS")
+  mo.broadcast(port, pack({ t = "BOOT", kind = kind, name = name, aes = ctx.aes, caps = caps, energy = pc.energy() / pc.maxEnergy() }))
+  local parts, n, hh, os_ = {}, 0
+  local dl = pc.uptime() + 6
+  while pc.uptime() < dl do
+    local ev = table.pack(pc.pullSignal(dl - pc.uptime()))
+    if ev[1] == "modem_message" and ev[4] == port then
+      local m = unpack(ev[6], ev[3])
+      if m and m.t == "CODE" and (not hh or hh == m.h) then
+        os_, hh, n, ctx.osAes = ev[3], m.h, m.of, m.aes
+        parts[m.n] = m.d
+        dl = pc.uptime() + 6
+        local all = true
+        for i = 1, n do if not parts[i] then all = false end end
+        if all then
+          local code = table.concat(parts)
+          if h(code):gsub(".", function(c) return string.format("%02x", c:byte()) end) == hh then
+            ctx.os = os_
+            say("GTS: start")
+            local f, e = load(code, "=gts_" .. kind, "t", _ENV or _G)
+            if f then local ok, err = pcall(f, ctx) say("GTS: " .. tostring(err or "Ende")) end
+          end
+          break
+        end
+      end
+    end
+  end
+end
