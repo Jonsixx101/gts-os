@@ -11,6 +11,9 @@
 -- Schluessel K aus dem Schwarm-Passwort (64 Runden SHA-256);
 -- E = sha256("E"..K)[1..16], M = sha256("M"..K).
 -- Inhalt: Lua-Tabelle als Text (gleiches Format wie im Drohnen-Lader).
+-- SHA-256 kommt aus crypto.lua (Data Card, sonst Lua) - der Rechner braucht
+-- darum keine eigene Data Card; ohne Tier-2-Karte gibt es nur kein AES.
+-- Netz- und Funkkarte: eine Wireless-Karte spricht auch ueber Kabel.
 return function(K, S)
 local component = require("component")
 local computer = require("computer")
@@ -20,8 +23,9 @@ local KEYFILE = K.ROOT .. "/data/schluessel.db"
 local modem, data
 local encKey, macKey, rawKey
 
-local function hex(s) return (s:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
-local function unhex(h) return (h:gsub("%x%x", function(x) return string.char(tonumber(x, 16)) end)) end
+local Cr = K.Cr
+local sha = Cr.sha256
+local hex, unhex = Cr.hex, Cr.unhex
 N.hex, N.unhex = hex, unhex
 
 -- Werte -> Lua-Text (nur einfache Daten)
@@ -58,19 +62,18 @@ N.unser = unser
 
 -- Schluessel ------------------------------------------------------------
 function N.derive(pw)
-    local h = data.sha256("GTS-OC-1|" .. pw)
-    for _ = 1, 64 do h = data.sha256(h .. pw) end
+    local h = sha("GTS-OC-1|" .. pw)
+    for _ = 1, 64 do h = sha(h .. pw) end
     return h
 end
 local function setKey(k)
     rawKey = k
-    encKey = data.sha256("E" .. k):sub(1, 16)
-    macKey = data.sha256("M" .. k)
+    encKey = sha("E" .. k):sub(1, 16)
+    macKey = sha("M" .. k)
     N.last = {}
 end
 function N.keyHex() return rawKey and hex(rawKey) end
 function N.setPassword(pw)
-    if not data then return false, "keine Data Card" end
     local k = N.derive(pw)
     setKey(k)
     N.isDefault = (pw == "gts")
@@ -81,7 +84,7 @@ end
 
 -- Siegel und Rahmen ---------------------------------------------------------
 local function seal(src, body)
-    return data.sha256(macKey .. data.sha256(macKey .. src .. body)):sub(1, 16)
+    return sha(macKey .. sha(macKey .. src .. body)):sub(1, 16)
 end
 function N.nextCtr()
     local c = K.realMs() * 1000
@@ -94,7 +97,7 @@ function N.pack(tbl, encrypt)
     local body = ser(tbl)
     local ctr = string.format("%016.0f", N.nextCtr())
     local frame
-    if encrypt and data.encrypt then
+    if encrypt and data and data.encrypt then
         local iv = data.random(16)
         frame = "G1E" .. ctr .. iv .. data.encrypt(body, encKey, iv)
     else
@@ -112,13 +115,15 @@ function N.unpack(frame, from)
     if not ctr then return nil, "zaehler" end
     local last = N.last[from]
     if last then
-        if ctr <= last then return nil, "wiederholt" end
+        -- gleicher Zaehler: dieselbe Nachricht zweimal (Wireless-Karte am Kabel sendet ueber beide Wege)
+        if ctr == last then return nil, "doppelt" end
+        if ctr < last then return nil, "wiederholt" end
     elseif math.abs(ctr / 1000 - K.realMs()) > 120000 then
         return nil, "zu alt"
     end
     local text
     if mode == "E" then
-        if not data.decrypt then return nil, "kein AES" end
+        if not (data and data.decrypt) then return nil, "kein AES" end
         local ok, plain = pcall(data.decrypt, body:sub(36), encKey, body:sub(20, 35))
         if not ok then return nil, "entschluesseln" end
         text = plain
@@ -142,6 +147,18 @@ function N.send(addr, tbl)
     if ok then N.stats.tx = N.stats.tx + 1 else K.log("WARN", "senden: " .. tostring(err)) end
     return ok
 end
+-- grosse Tabellen in Teilen (FR); die Gegenseite setzt sie zusammen
+N.fid = 0
+function N.sendBig(addr, tbl)
+    tbl.to = addr
+    local s = ser(tbl)
+    if #s <= 3000 then return N.send(addr, tbl) end
+    N.fid = N.fid + 1
+    local n = math.ceil(#s / 3000)
+    local ok = true
+    for i = 1, n do ok = N.send(addr, { t = "FR", id = N.fid, n = i, of = n, d = s:sub((i - 1) * 3000 + 1, i * 3000) }) and ok end
+    return ok
+end
 function N.broadcast(tbl)
     if not N.ready then return false end
     local ok = pcall(function() modem.broadcast(N.port, N.pack(tbl, false)) end)
@@ -155,16 +172,21 @@ function N.on(fn) N.listeners[#N.listeners + 1] = fn end
 local function onMessage(localAddr, from, port, dist, frame)
     if not N.ready or port ~= N.port or localAddr ~= modem.address then return end
     local t, mode = N.unpack(frame, from)
+    if dist == 0 and (t or mode == "doppelt") then
+        -- per Kabel angekommen (Funk hat Abstand > 0)
+        N.peers[from] = N.peers[from] or {}
+        N.peers[from].wiredT = computer.uptime()
+    end
     if not t then
         if mode == "fremd" then N.stats.foreign = N.stats.foreign + 1
-        else N.stats.bad = N.stats.bad + 1 N.lastBad = { from = from, why = mode, t = computer.uptime() } end
+        elseif mode ~= "doppelt" then N.stats.bad = N.stats.bad + 1 N.lastBad = { from = from, why = mode, t = computer.uptime() } end
         return
     end
     if t.to and t.to ~= modem.address then return end
     N.stats.rx = N.stats.rx + 1
     N.peers[from] = N.peers[from] or {}
     if t.aes ~= nil then N.peers[from].aes = t.aes == true end
-    N.peers[from].dist = dist
+    if dist > 0 or not N.peers[from].dist then N.peers[from].dist = dist end
     N.peers[from].seen = computer.uptime()
     N.peers[from].secure = (mode == "E")
     for _, fn in ipairs(N.listeners) do
@@ -182,9 +204,8 @@ function N.start()
     end
     for addr in component.list("data") do data = component.proxy(addr) break end
     N.modem, N.data = modem, data
-    if not modem then N.reason = "kein Netzwerk-/Funkkarte" return false end
-    if not data then N.reason = "keine Data Card" return false end
-    N.aes = data.encrypt ~= nil
+    if not modem then N.reason = "keine Netzwerk-/Funkkarte" return false end
+    N.aes = (data and data.encrypt) ~= nil
     N.port = tonumber(K.set.port) or 4711
     local stored = S.load(KEYFILE)
     if stored and stored.key and #stored.key == 64 then

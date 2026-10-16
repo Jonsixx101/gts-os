@@ -25,6 +25,7 @@ local S = lib("store")
 local K = lib("kernel")(G, UI, S, ROOT)
 K.G, K.UI, K.S = G, UI, S
 K.lib = lib
+K.Cr = lib("crypto")()
 
 -- Absturz-Bildschirm --------------------------------------------------
 local function crashScreen(err, trace)
@@ -69,19 +70,24 @@ local function app(id, title, order, extra)
     if K.set.safeMode and def.optional then return end
     if fs.exists(def.file) then K.register(def) end
 end
-local function hasWarp()
-    for _, t in pairs(component.list()) do if t:match("^warpdrive") then return true end end
-    return false
+local function has(cat)
+    return function()
+        if not K.dev then return false end
+        for _, e in ipairs(K.dev.list) do if e.cat == cat and not e.infra then return true end end
+        return false
+    end
 end
 app("home", "HOME", 1, { keep = true })
-app("drones", "DROHNEN", 2, { keep = true })
-app("ship", "SCHIFF", 3, { visible = hasWarp, optional = true })
-app("info", "SYSTEM", 4)
+app("drones", "DROHNEN", 2)
+app("security", "SICHERHEIT", 3, { optional = true })
+app("plant", "ANLAGEN", 4, { visible = has("anlagen"), optional = true })
+app("storage", "LAGER", 5, { visible = has("lager"), optional = true })
+app("devices", "GERÄTE", 6)
+app("info", "SYSTEM", 7)
 app("notes", "NOTIZEN", 10, { optional = true })
 app("calc", "RECHNER", 11, { optional = true })
 app("files", "DATEIEN", 12, { optional = true })
 app("ki", "KI", 13, { optional = true })
-app("games", "SPIELE", 14, { optional = true })
 app("shell", "SHELL", 20)
 app("setup", "EINRICHTEN", 90, { hidden = true })
 
@@ -92,13 +98,26 @@ local function main()
     K.net.start()
     K.units = lib("units")(K, S, K.net)
     K.spawn("einheiten", K.units.service)
+    K.dev = lib("dev")(K, S, K.net, K.units)
+    K.spawn("geraete", K.dev.service)
     local sys = lib("sys")(K, S)
     K.sys = sys
     K.spawn("system", sys.service)
-    if hasWarp() and not K.set.safeMode then
-        local ok, w = pcall(function() return lib("warp")(K, S) end)
-        if ok then K.warp = w K.spawn("schiff", w.service) else K.log("FEHLER", "warp: " .. tostring(w)) end
+    -- Sicherheit (Tueren, Leser, Melder) und Vorrat (AE2) laufen immer, auch ohne offene App
+    if not K.set.safeMode then
+        for _, l in ipairs({ { "secu", "sec", "sicherheit" }, { "stock", "stock", "vorrat" } }) do
+            local ok, mod = pcall(function() return lib(l[1])(K, S, K.dev) end)
+            if ok then K[l[2]] = mod K.spawn(l[3], mod.service) else K.log("FEHLER", l[1] .. ": " .. tostring(mod)) end
+        end
     end
+    -- KI-Ereignis-Modus (nur wenn in KI > EINSTELLUNGEN eingeschaltet)
+    local function kiEvent(text)
+        if not K.set.kiEvents then return end
+        local ok, ki = pcall(K.module, "ki")
+        if ok and ki and ki.event then pcall(ki.event, text) end
+    end
+    K.onIntruder = function(name, where) kiEvent("Fremder Spieler \"" .. tostring(name) .. "\" gesehen bei " .. tostring(where)) end
+    K.onRule = function(r, v, why) kiEvent("Wächter \"" .. tostring(r and r.name or "?") .. "\" hat ausgelöst" .. (why and (": " .. why) or "")) end
     K.locked = K.set.setupDone
     if not K.set.setupDone then K.open("setup") else K.open("home") end
     K.log("INFO", "GTS OS " .. K.VERSION .. " gestartet" .. (K.set.safeMode and " (sicherer Modus)" or ""))
@@ -112,6 +131,7 @@ while true do
     crashScreen(err, trace)
     K.services = {}
     K.loaded = {}
+    K.handlers = {}
     K.running = true
 end
 -- OS beendet (SHELL-App): Bildschirm aufraeumen, Farben zuruecksetzen

@@ -4,9 +4,11 @@ local computer = require("computer")
 local C = G.C
 local A = { page = { page = 1 } }
 
-A.ICON = { home = "◆", drones = "◎", ship = "▲", info = "◈", notes = "≡", calc = "±", files = "▤", ki = "◇", games = "►", shell = "›" }
-A.SUB = { drones = "Drohnen & Robots", ship = "WarpDrive", info = "Einstellungen", notes = "Merkzettel", calc = "Rechnen",
-          files = "Dateien ansehen", ki = "Claude fragen", games = "Snake & mehr", shell = "OpenOS (Admin)" }
+A.ICON = { home = "◆", drones = "◎", security = "▣", plant = "☢", storage = "▦", devices = "◫", info = "◈", notes = "≡", calc = "±",
+           files = "▤", ki = "◇", shell = "›" }
+A.SUB = { drones = "Drohnen & Robots", security = "Türen, Melder, Abwehr", plant = "Reaktoren & Energie", storage = "ME-Netz (AE2)",
+          devices = "Geräte & Knoten", info = "Einstellungen", notes = "Merkzettel", calc = "Rechnen", files = "Dateien ansehen",
+          ki = "Claude fragen", shell = "OpenOS (Admin)" }
 
 local function greeting()
     local _, _, _, h = K.localTime()
@@ -66,13 +68,23 @@ function A.draw(x, y, w, h)
     local e = computer.energy() / math.max(1, computer.maxEnergy())
     local ram = 1 - computer.freeMemory() / math.max(1, computer.totalMemory())
     local hist = K.sys.hist
+    local fleet = #K.units.fleet()
+    local _, _, _, nk = K.units.online()
+    local sec = K.sec and K.sec.db
+    local nDev = 0
+    for _, e in ipairs(K.dev.list) do if not e.infra and e.cat ~= "system" then nDev = nDev + 1 end end
     local cards = {
-        { "EINHEITEN", n .. " / " .. total .. " online", nd .. (nd == 1 and " Drohne · " or " Drohnen · ") .. nr .. (nr == 1 and " Robot" or " Robots"), n > 0 and C.accent or C.dim, nil },
-        { "ENERGIE", math.floor(e * 100) .. " %", string.format("%d / %d im Puffer", math.floor(computer.energy()), math.floor(computer.maxEnergy())), e < 0.2 and C.bad or C.info, hist.energy },
-        { "ARBEITSSPEICHER", math.floor(ram * 100) .. " %", K.bytes(computer.freeMemory()) .. " frei", ram > 0.85 and C.warn or C.accent, hist.ram },
-        { "FUNK", net.ready and (net.stats.rx .. " ein · " .. net.stats.tx .. " aus") or "aus", net.ready and (net.isDefault and "Standard-Passwort!" or "Port " .. net.port) or (net.reason or ""), net.isDefault and C.warn or C.dim, nil },
+        { "EINHEITEN", n .. " / " .. fleet .. " online", nd .. (nd == 1 and " Drohne · " or " Drohnen · ") .. nr .. (nr == 1 and " Robot" or " Robots"), n > 0 and C.accent or C.dim, nil, "drones" },
+        { "SICHERHEIT", sec and (sec.lockdown and "ABGERIEGELT" or (sec.guard.on and "SCHARF" or "Abwehr aus")) or "-",
+          sec and (#sec.doors .. " Türen · " .. #sec.people .. " Personen") or "", sec and (sec.lockdown or K.sec.alarmOn) and C.bad or (sec and sec.guard.on and C.warn or C.dim), nil, "security" },
+        { "VERBUND", nDev .. " Geräte", nk .. " Knoten online", C.info, nil, "devices" },
+        { "ENERGIE", math.floor(e * 100) .. " %", string.format("%d / %d im Puffer", math.floor(computer.energy()), math.floor(computer.maxEnergy())), e < 0.2 and C.bad or C.info, hist.energy, "info" },
+        { "ARBEITSSPEICHER", math.floor(ram * 100) .. " %", K.bytes(computer.freeMemory()) .. " frei", ram > 0.85 and C.warn or C.accent, hist.ram, "info" },
+        { "FUNK", net.ready and (net.aes and "AES" or "gesiegelt") or "aus", net.ready and (net.isDefault and "Standard-Passwort!" or "Port " .. net.port) or (net.reason or ""), net.isDefault and C.warn or C.dim, nil, "info" },
     }
-    local perRow = 4
+    local perRow = math.max(2, math.min(6, math.floor((cw + 2) / 24)))
+    while #cards > perRow * 2 do table.remove(cards) end
+    if h < 30 then while #cards > perRow do table.remove(cards) end end
     local ch = (h >= 40) and 8 or (h >= 28 and 5 or 4)
     -- Spalten exakt auf die Breite verteilen (der Rest geht nicht verloren)
     local function colX(i, n, gap) return cx + math.floor((i - 1) * (cw + gap) / n) end
@@ -81,12 +93,13 @@ function A.draw(x, y, w, h)
         local x0 = colX(col + 1, perRow, 2)
         local x1 = colX(col + 2, perRow, 2) - 2
         stat(x0, top + row * (ch + 1), x1 - x0, ch, c[1], c[2], c[3], c[4], c[5])
+        if c[6] then UI.region(x0, top + row * (ch + 1), x1 - x0, ch, function() K.open(c[6]) end) end
     end
     top = top + math.ceil(#cards / perRow) * (ch + 1)
     -- App-Kacheln (unten): Anzahl Reihen vorab bestimmen
     local apps = {}
     for _, a in ipairs(K.visibleApps()) do if a.id ~= "home" and not a.hidden then apps[#apps + 1] = a end end
-    local per = narrow and 4 or math.min(#apps, 8)
+    local per = narrow and 4 or math.min(#apps, 6)
     local tileRows = math.ceil(#apps / math.max(1, per))
     local tilesH = (narrow or h < 30) and 3 or 5
     local tilesArea = tileRows * tilesH
@@ -94,10 +107,10 @@ function A.draw(x, y, w, h)
     local midH = y + h - top - tilesArea - 1
     if midH >= 6 then
         local leftW = narrow and cw or math.floor(cw * 0.58)
-        local ix, iy, iw, ih = UI.card(cx, top, leftW, midH, "SCHWARM", { right = total > 0 and "ALLE ANSEHEN ▸" or nil })
+        local ix, iy, iw, ih = UI.card(cx, top, leftW, midH, "SCHWARM", { right = fleet > 0 and "ALLE ANSEHEN ▸" or nil })
         UI.region(cx + leftW - 18, top + 1, 16, 1, function() K.open("drones") end)
         local list = {}
-        for _, u in ipairs(K.units.list) do if not u.waiting then list[#list + 1] = u end end
+        for _, u in ipairs(K.units.fleet()) do if not u.waiting then list[#list + 1] = u end end
         table.sort(list, function(a, b) if a.online ~= b.online then return a.online end return K.units.label(a) < K.units.label(b) end)
         if #list == 0 then
             UI.para(ix, iy + 1, iw, "Noch keine Drohnen oder Robots. In DROHNEN > EINRICHTEN eine EEPROM schreiben und eine Drohne bauen.", C.muted, ih - 1)
@@ -117,7 +130,7 @@ function A.draw(x, y, w, h)
                 G.text(mx + 8, my + i - 1, G.fit(nt.text, mw - 8), C.text, C.card)
             end
             UI.region(rx, top, rw, half, function() K.unread = 0 K.open("info", "notes") end)
-            local vx, vy, vw, vh = UI.card(rx, top + half, rw, midH - half, "BESUCHER (BEWEGUNGSSENSOR)")
+            local vx, vy, vw, vh = UI.card(rx, top + half, rw, midH - half, "BESUCHER (SENSOREN)")
             local vis = K.units.visitors
             if #vis == 0 then G.text(vx, vy, "Noch niemand gesehen", C.muted, C.card) end
             for i, v in ipairs(vis) do

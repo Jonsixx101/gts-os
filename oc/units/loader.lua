@@ -1,6 +1,9 @@
 -- GTS-Lader (EEPROM, hoechstens 4 KB): meldet sich beim GTS OS, bekommt das
--- Programm per Funk (gesiegelt, Pruefsumme) und startet es.
+-- Programm per Funk (jedes Teil gesiegelt) und startet es.
+-- Drohne, Robot oder Knoten (jeder andere Rechner / Mikrocontroller).
 -- EEPROM-Daten: "GTS1|<Schluessel hex>|<Port>|<Name>"
+-- ctx.h darf das Programm ersetzen (Knoten: SHA-256 in Lua, die Data Card
+-- braucht fuer grosse Rahmen mehr Strom, als ein Rechner im Puffer hat).
 local cp = component or require("component")
 local pc = computer or require("computer")
 local function first(t) for a in cp.list(t) do return cp.proxy(a) end end
@@ -13,7 +16,8 @@ if cf then cf:close() end
 if not (kh and mo and da) then say("GTS: Daten/Karte fehlt") error("GTS: EEPROM, Modem oder Data Card fehlt") end
 port = tonumber(port)
 local key = kh:gsub("%x%x", function(x) return string.char(tonumber(x, 16)) end)
-local h = da.sha256
+local ctx = {}
+local function h(s) return (ctx.h or da.sha256)(s) end
 local E, M = h("E" .. key):sub(1, 16), h("M" .. key)
 local tf = cp.proxy(pc.tmpAddress())
 local lc, seen = 0, {}
@@ -61,9 +65,9 @@ mo.open(port)
 if mo.setStrength then mo.setStrength(400) end
 local caps = {}
 for _, t in pairs(cp.list()) do caps[t] = true end
-local kind = cp.list("drone")() and "drone" or (cp.list("robot")() and "robot" or "mc")
-local ctx = { modem = mo, data = da, port = port, pack = pack, unpack = unpack, ser = ser, now = now, eeprom = ee,
-              name = name, kind = kind, caps = caps, aes = da.encrypt ~= nil, say = say }
+local kind = cp.list("drone")() and "drone" or (cp.list("robot")() and "robot" or "node")
+for k, v in pairs({ modem = mo, data = da, port = port, pack = pack, unpack = unpack, ser = ser, now = now, eeprom = ee,
+                    name = name, kind = kind, caps = caps, aes = da.encrypt ~= nil, say = say }) do ctx[k] = v end
 while true do
   say("GTS: suche OS")
   mo.broadcast(port, pack({ t = "BOOT", kind = kind, name = name, aes = ctx.aes, caps = caps, energy = pc.energy() / pc.maxEnergy() }))
@@ -80,13 +84,11 @@ while true do
         local all = true
         for i = 1, n do if not parts[i] then all = false end end
         if all then
-          local code = table.concat(parts)
-          if h(code):gsub(".", function(c) return string.format("%02x", c:byte()) end) == hh then
-            ctx.os = os_
-            say("GTS: start")
-            local f, e = load(code, "=gts_" .. kind, "t", _ENV or _G)
-            if f then local ok, err = pcall(f, ctx) say("GTS: " .. tostring(err or "Ende")) end
-          end
+          ctx.os = os_
+          say("GTS: start")
+          local f, e = load(table.concat(parts), "=gts_" .. kind, "t", _ENV or _G)
+          if f then local ok, err = pcall(f, ctx) say("GTS: " .. tostring(err or "Ende")) end
+          ctx.h = nil
           break
         end
       end

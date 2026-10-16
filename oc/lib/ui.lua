@@ -300,6 +300,10 @@ function UI.keypad(o)
     o.text = ""
     UI.modal = o
 end
+-- Auswahl-Menue (z.B. "MEHR"): items = { { text, onClick, style, disabled, confirm, sub }, ... }
+function UI.menu(title, items)
+    UI.modal = { kind = "menu", title = title, items = items }
+end
 function UI.closeModal() UI.modal = nil end
 
 local function modalBox(w, h)
@@ -381,6 +385,24 @@ function UI.drawModal(hasKeyboard)
             { text = "ABBRECHEN", style = "subtle", onClick = function() UI.modal = nil if m.onCancel then m.onCancel() end end },
             { text = m.okText or "OK", style = "primary", onClick = function() UI.submit() end },
         }, y + h - 2, x + w - 3)
+    elseif m.kind == "menu" then
+        local w = math.max(32, G.len(m.title or "") + 8)
+        for _, it in ipairs(m.items) do w = math.max(w, G.len(it.text) + 10 + (it.sub and (G.len(it.sub) + 2) or 0)) end
+        local per = 2
+        local x, y, ww, hh = modalBox(w, #m.items * per + 5)
+        local maxRows = math.floor((hh - 5) / per)
+        G.text(x + 3, y + 1, G.fit(m.title or "", ww - 8), C.text, C.raised)
+        UI.button({ x = x + ww - 4, y = y + 1, w = 3, text = "✕", style = "ghost", onClick = function() UI.modal = nil end })
+        for i, it in ipairs(m.items) do
+            if i > maxRows then break end
+            local by = y + 2 + (i - 1) * per + 1
+            UI.button({ x = x + 3, y = by, w = ww - 6, text = it.text, style = it.style or "subtle", align = "left", disabled = it.disabled,
+                        confirm = it.confirm, confirmText = it.confirmText, fixed = true, onClick = function(...)
+                            UI.modal = nil
+                            if it.onClick then it.onClick(...) end
+                        end })
+            if it.sub then G.right(x + ww - 5, by, G.fit(it.sub, math.max(4, ww - 12 - G.len(it.text))), C.muted, G.getBg(x + ww - 5, by)) end
+        end
     elseif m.kind == "keypad" then
         local x, y, w, h = modalBox(30, 19)
         G.center(x, y + 1, w, m.title or "Code", C.text, C.raised)

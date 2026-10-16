@@ -6,7 +6,7 @@
 -- Zu Hause steht der Robot auf einer Kiste (Abladen nach unten) und neben
 -- einem Charger.
 local ctx = ...
-local VERSION = "1.0"
+local VERSION = "1.1"
 local cp = component or require("component")
 local pc = computer or require("computer")
 local function first(t) for a in cp.list(t) do return cp.proxy(a) end end

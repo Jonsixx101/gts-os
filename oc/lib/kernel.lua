@@ -8,7 +8,7 @@ local fs = require("filesystem")
 local K = { apps = {}, byId = {}, app = nil, appId = nil, notes = {}, toast = nil, locked = true,
             services = {}, dirty = true, running = true, lastInput = 0, ROOT = ROOT, loaded = {} }
 local C = G.C
-K.VERSION = "1.0.0"
+K.VERSION = "1.1.0"
 K.EDITION = "oc"
 
 -- ---------------------------------------------------------------------
@@ -16,13 +16,15 @@ K.EDITION = "oc"
 -- ---------------------------------------------------------------------
 local SETFILE = ROOT .. "/data/einstellungen.db"
 local DEFAULTS = {
-    owner = "", theme = "graphit", accent = "gruen", autoLock = 10, res = "auto", tz = "berlin",
+    owner = "", theme = "graphit", accent = "gruen", autoLock = 10, res = "auto", scale = "normal", tz = "berlin",
     codeHash = nil, adminHash = nil, setupDone = false, port = 4711, heartbeat = 5, homeAt = 25,
-    autoAccept = true, sound = true, pinned = { "home", "drones", "ship", "info" }, trusted = {},
+    autoAccept = true, sound = true, pinned = { "home", "drones", "security", "plant", "storage", "info" }, trusted = {},
     kiModel = "claude-haiku-5-5", kiDaily = 100, crashes = {},
 }
 K.set = S.load(SETFILE, {})
 for k, v in pairs(DEFAULTS) do if K.set[k] == nil then K.set[k] = v end end
+-- aus 1.0: SCHIFF und SPIELE gibt es nicht mehr, neue Apps anheften
+for _, id in ipairs(K.set.pinned or {}) do if id == "ship" or id == "games" then K.set.pinned = DEFAULTS.pinned break end end
 function K.save() S.save(SETFILE, K.set) end
 function K.setting(k, v) K.set[k] = v K.save() K.dirty = true end
 
@@ -122,6 +124,31 @@ function K.ago(sec)
     if sec < 86400 then return math.floor(sec / 3600) .. " h" end
     return math.floor(sec / 86400) .. " d"
 end
+-- Zahlen deutsch: 1.234.567 bzw. 12,5; gross: 3,4 Mio / 1,2 Mrd
+function K.num(n, dec)
+    n = tonumber(n)
+    if not n then return "-" end
+    if n ~= n then return "-" end
+    local neg = n < 0
+    n = math.abs(n)
+    local int = math.floor(n)
+    local s = string.format("%.0f", int):reverse():gsub("(%d%d%d)", "%1."):reverse():gsub("^%.", "")
+    if dec and dec > 0 then
+        local f = math.floor((n - int) * 10 ^ dec + 0.5)
+        if f >= 10 ^ dec then return K.num((neg and -1 or 1) * (int + 1), dec) end
+        s = s .. "," .. string.format("%0" .. dec .. "d", f)
+    end
+    return (neg and "-" or "") .. s
+end
+function K.si(n)
+    n = tonumber(n) or 0
+    local a = math.abs(n)
+    if a >= 1e12 then return K.num(n / 1e12, 1) .. " Bio" end
+    if a >= 1e9 then return K.num(n / 1e9, 1) .. " Mrd" end
+    if a >= 1e6 then return K.num(n / 1e6, 1) .. " Mio" end
+    if a >= 1e4 then return K.num(n / 1e3, 1) .. " Tsd" end
+    return K.num(n, a < 10 and a ~= math.floor(a) and 1 or 0)
+end
 function K.bytes(n)
     if n >= 1048576 then return (string.format("%.1f MB", n / 1048576):gsub("%.", ",", 1)) end
     if n >= 1024 then return string.format("%.0f KB", n / 1024) end
@@ -157,14 +184,10 @@ end
 K.LEVEL = { info = C.info, ok = C.accent, warn = C.warn, bad = C.bad }
 
 -- ---------------------------------------------------------------------
--- Code-Hash (Data Card, sonst eigene Pruefsumme)
+-- Code-Hash: SHA-256 (Data Card oder Lua - gleiches Ergebnis)
+-- Aeltere Fassungen ohne Data Card speicherten "x..." (eigene Pruefsumme).
 -- ---------------------------------------------------------------------
-function K.hash(s)
-    local d = component.isAvailable("data") and component.data
-    if d then
-        local ok, h = pcall(d.sha256, "GTS-OC|" .. s)
-        if ok and h then return (h:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
-    end
+local function oldHash(s)
     local h1, h2 = 5381, 52711
     for i = 1, #s do
         local b = s:byte(i)
@@ -173,9 +196,11 @@ function K.hash(s)
     end
     return string.format("x%08x%08x", h1, h2)
 end
+function K.hash(s) return K.Cr.sha256hex("GTS-OC|" .. s) end
 function K.checkCode(code, which)
     local h = K.set[which or "codeHash"]
     if not h then return code == "3344" end
+    if h:sub(1, 1) == "x" then return oldHash(code) == h end
     return K.hash(code) == h
 end
 
@@ -195,7 +220,7 @@ function K.visibleApps()
     end
     return out
 end
--- Modul einer App laden (bleiben hoechstens 3 im Speicher)
+-- Modul einer App laden (bleiben hoechstens 2 im Speicher, dazu HOME)
 local loadOrder = {}
 function K.module(id)
     local def = K.byId[id]
@@ -206,7 +231,7 @@ function K.module(id)
     local mod = f(K, G, UI, S)
     K.loaded[id] = mod
     loadOrder[#loadOrder + 1] = id
-    while #loadOrder > 3 do
+    while #loadOrder > 2 do
         local old = table.remove(loadOrder, 1)
         if old ~= K.appId and not (K.byId[old] and K.byId[old].keep) then
             if K.loaded[old] and K.loaded[old].unload then pcall(K.loaded[old].unload) end
@@ -297,24 +322,71 @@ end
 -- ---------------------------------------------------------------------
 -- Bildschirm
 -- ---------------------------------------------------------------------
+-- Bildschirm: der gewaehlte, sonst der groesste (in Bloecken; mit Tastatur
+-- bevorzugt). Grafikkarte: die staerkste. Skalierung: weniger Zeichen =
+-- groessere Schrift (Gross 60 %, Mittel 80 %, Normal = alles).
+K.SCALES = { { id = "gross", text = "GROSS", f = 0.6 }, { id = "mittel", text = "MITTEL", f = 0.8 }, { id = "normal", text = "NORMAL", f = 1 } }
+local function pickScreen()
+    local best, bestScore
+    for addr in component.list("screen", true) do
+        local p = component.proxy(addr)
+        local aw, ah, kb = 1, 1, 0
+        pcall(function() aw, ah = p.getAspectRatio() end)
+        pcall(function() kb = #p.getKeyboards() end)
+        local score = aw * ah * 10 + (kb > 0 and 5 or 0) + (addr == K.set.screen and 1e6 or 0)
+        if not bestScore or score > bestScore then best, bestScore = p, score end
+    end
+    return best
+end
+local function pickGpu()
+    local best, bestScore
+    for addr in component.list("gpu", true) do
+        local p = component.proxy(addr)
+        local ok, w, h = pcall(p.maxResolution)
+        local score = ok and (w * h) or 0
+        if not bestScore or score > bestScore then best, bestScore = p, score end
+    end
+    return best
+end
+function K.screens()
+    local out = {}
+    for addr in component.list("screen", true) do
+        local p = component.proxy(addr)
+        local aw, ah, kb = 1, 1, 0
+        pcall(function() aw, ah = p.getAspectRatio() end)
+        pcall(function() kb = #p.getKeyboards() end)
+        out[#out + 1] = { addr = addr, aw = aw, ah = ah, kb = kb > 0, on = addr == K.screen }
+    end
+    return out
+end
 function K.initScreen()
-    local gpu = component.isAvailable("gpu") and component.gpu
-    local scr = component.isAvailable("screen") and component.screen
+    local gpu, scr = pickGpu(), pickScreen()
     if not gpu or not scr then error("GTS OS braucht Grafikkarte und Bildschirm", 0) end
     K.screen = scr.address
     K.keyboards = scr.getKeyboards and scr.getKeyboards() or {}
+    local aw, ah = 1, 1
+    pcall(function() aw, ah = scr.getAspectRatio() end)
+    K.aspect = aw .. "x" .. ah
     local want
-    if K.set.res == "auto" then
-        local aw, ah = 1, 1
-        pcall(function() aw, ah = scr.getAspectRatio() end)
-        want = { aw = aw, ah = ah }
-    elseif type(K.set.res) == "table" then
+    if type(K.set.res) == "table" then
         want = { w = K.set.res[1], h = K.set.res[2] }
+    else
+        local f = 1
+        for _, sc in ipairs(K.SCALES) do if sc.id == K.set.scale then f = sc.f end end
+        want = { aw = aw, ah = ah, f = f }
     end
     G.applyTheme(K.set.theme, K.set.accent)
     K.w, K.h = G.init(gpu, scr.address, want)
     K.hasKeyboard = #K.keyboards > 0
     K.dirty = true
+end
+-- regelmaessig: hat sich der Bildschirm veraendert (Bloecke dazu, andere Karte)?
+function K.checkScreen()
+    local scr = pickScreen()
+    if not scr then return end
+    local aw, ah = 1, 1
+    pcall(function() aw, ah = scr.getAspectRatio() end)
+    if scr.address ~= K.screen or (aw .. "x" .. ah) ~= K.aspect then K.initScreen() end
 end
 function K.narrow() return K.w < 100 end
 
@@ -344,23 +416,7 @@ local function drawTaskbar()
         G.text(xr, y, label, C.white, C.bad)
         UI.region(xr, y, G.len(label), 1, function() K.open("info", "notes") end)
     end
-    -- Mitteilung (Toast) in der Taskleiste - verdeckt nie den Inhalt
-    local t = K.toast
-    if t and computer.uptime() <= t.untilT then
-        local n = t.note
-        local maxW = math.max(10, math.min(W - 30, xr - x - 2))
-        local text = G.fit(n.text, maxW - 4)
-        local tw = G.len(text) + 4
-        xr = xr - tw - 1
-        G.fill(xr, y, tw, 1, C.raised)
-        G.put(xr + 1, y, "●", K.LEVEL[n.level] or C.info, C.raised)
-        G.text(xr + 3, y, text, C.text, C.raised)
-        UI.region(xr, y, tw, 1, function()
-            K.toast = nil
-            if n.target then K.open(n.target) end
-        end)
-    end
-    -- Reiter
+    -- Reiter zuerst (sie verschwinden nicht hinter einer Mitteilung)
     for _, id in ipairs(K.set.pinned or {}) do
         local a = K.byId[id]
         if a and id ~= "home" and (not a.visible or a.visible()) then
@@ -373,6 +429,24 @@ local function drawTaskbar()
             if on then G.put(x, y, "▍", C.accent) end
             UI.region(x, y, lw, 1, function() K.open(id) end)
             x = x + lw
+        end
+    end
+    -- Mitteilung (Toast) im freien Platz dazwischen - verdeckt nie den Inhalt
+    local t = K.toast
+    if t and computer.uptime() <= t.untilT then
+        local n = t.note
+        local room = xr - x - 2
+        if room >= 8 then
+            local text = G.fit(n.text, math.min(room, 60) - 4)
+            local tw = G.len(text) + 4
+            local tx = xr - tw - 1
+            G.fill(tx, y, tw, 1, C.raised)
+            G.put(tx + 1, y, "●", K.LEVEL[n.level] or C.info, C.raised)
+            G.text(tx + 3, y, text, C.text, C.raised)
+            UI.region(tx, y, tw, 1, function()
+                K.toast = nil
+                if n.target then K.open(n.target) end
+            end)
         end
     end
 end
@@ -454,6 +528,8 @@ function K.askUnlock(after, err)
 end
 -- Admin-Code fuer Shell, Lua und Sicherheits-Einstellungen
 function K.askAdmin(title, after)
+    -- innerhalb des Admin-Fensters (2 min) nicht nochmal fragen
+    if K.isAdmin() then K.adminUntil = computer.uptime() + 120 after() return end
     UI.keypad({ title = title or "Admin-Code", maxLen = 8, onOk = function(code)
         if K.checkCode(code, "adminHash") or (not K.set.adminHash and K.checkCode(code)) then
             K.adminUntil = computer.uptime() + 120
@@ -539,11 +615,16 @@ local function dispatch(ev)
         K.dirty = true
     elseif name == "component_added" or name == "component_removed" then
         K.hwChanged = true
+        if ev[3] == "screen" or ev[3] == "gpu" or ev[3] == "keyboard" then K.screenCheckAt = computer.uptime() + 0.5 end
         K.dirty = true
     end
     for _, fn in ipairs(K.handlers[name] or {}) do
         local ok, err = pcall(fn, table.unpack(ev, 2, ev.n))
         if not ok then K.log("FEHLER", name .. ": " .. tostring(err)) end
+    end
+    for _, fn in ipairs(K.handlers["*"] or {}) do
+        local ok, err = pcall(fn, ev)
+        if not ok then K.log("FEHLER", "*: " .. tostring(err)) end
     end
     if not K.locked and K.app and K.app.signal then pcall(K.app.signal, table.unpack(ev, 1, ev.n)) end
 end
@@ -570,6 +651,10 @@ function K.run()
             if K.app and K.app.tick and not K.locked then
                 local ok2, changed = pcall(K.app.tick)
                 if ok2 and changed then K.dirty = true end
+            end
+            if K.screenCheckAt and now >= K.screenCheckAt then
+                K.screenCheckAt = nil
+                pcall(K.checkScreen)
             end
             local mins = K.set.autoLock or 0
             if not K.locked and mins > 0 and now - K.lastInput > mins * 60 then K.lock() end

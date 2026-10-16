@@ -17,11 +17,11 @@ Der Installer erkennt das Geraet (PC, Pocket: Tablet, Phone oder Claude-Fernbedi
 passende Datei, prueft sie und richtet sie als `startup.lua` ein. Turtles danach mit
 `P` das Schwarm-Passwort geben - oder bequemer am PC: DATEN > TURTLE-DISK.
 
-## OpenComputers (Minecraft 1.7.10) - neu: GTS OS 1.0 fuer OC
+## OpenComputers (Minecraft 1.7.10) - GTS OS 1.1 fuer OC
 
-Eigene Fassung im Ordner `oc/` fuer OpenComputers (im Simulator gegen die OC-API getestet, Lua 5.2 und 5.3 - im Spiel noch nicht),
-gebaut fuer Star-Wars-/Faction-Server mit WarpDrive. Gleiche Bedienung wie am CC-PC, aber
-modular (Apps werden nur bei Bedarf geladen) und mit 16 exakt gesetzten Farben je Thema.
+Eigene Fassung im Ordner `oc/` fuer OpenComputers (im Simulator gegen die OC-API getestet, Lua 5.2 und 5.3,
+80x25 bis 160x50 - im Spiel noch nicht). Gebaut fuer NNC Nuclear Nexus: HBM's Nuclear Tech, OpenSecurity,
+Applied Energistics 2. Apps werden nur bei Bedarf geladen; mehrere Rechner arbeiten als **Verbund** unter einer Oberflaeche.
 
 **Installieren** (im OC-Rechner mit Internet Card, OpenOS auf der Festplatte):
 
@@ -31,22 +31,26 @@ wget -f https://raw.githubusercontent.com/Jonsixx101/gts-os/main/install.lua /tm
 ```
 
 Derselbe `install.lua` erkennt OpenComputers selbst. Auf einem **Robot** richtet er nur den
-GTS-Lader ein (Schwarm-Passwort, Name) - der Robot meldet sich dann in der DROHNENZENTRALE.
-**Drohnen** bekommen eine EEPROM: DROHNEN > EINRICHTEN > GTS-LADER SCHREIBEN.
+GTS-Lader ein (Schwarm-Passwort, Name). **Drohnen** und **Knoten** bekommen eine EEPROM:
+DROHNEN > EINRICHTEN bzw. GERAETE > VERBUND.
 
 | App | Was |
 |---|---|
-| HOME | Uebersicht: Einheiten, Energie, RAM, Funk, Meldungen, Besucher |
-| DROHNEN | Drohnenzentrale: Drohnen (Ziel, Heim, Patrouille, Wache, Kurier, Chunkloader, Bewegungssensor) und Robots (Abbauen, Scan, Abladen), Karte, Wegpunkte, Besucher-Log |
-| SCHIFF | WarpDrive: Bruecke, Sprungplaner (relativ oder Zielkoordinaten), Radar mit Lagebild, Kontakt-Gedaechtnis, Lauschstation, Erkundungsflug (Autopilot + Radar), Tarnung. Erscheint nur mit WarpDrive-Geraeten |
-| SYSTEM | Rechner-Info, System-Check, Einstellungen, Meldungen, Update, Backup, Wartung |
-| NOTIZEN, RECHNER, DATEIEN, SPIELE | Merkzettel, Rechner + Umrechner, Dateien mit Editor, Snake + Asteroiden |
-| KI | Claude ueber die API (eigener API-Schluessel, Tageslimit); veraendernde Aktionen nur nach Bestaetigung |
+| HOME | Uebersicht: Einheiten, Sicherheit, Verbund, Energie, RAM, Funk, Meldungen, Besucher |
+| DROHNEN | Drohnen (Ziel, Heim, Patrouille, Aufklaerung um die Basis, Wache, Kurier) und Robots (Abbauen, Scan); Ladestationen mit Weltkoordinaten, Karte, Wegpunkte, Besucher |
+| SICHERHEIT | OpenSecurity: Tueren, Personen (Karten schreiben, Biometrie, PIN), Melder, Abwehr (Alarm, Redstone-Fallen, Abriegeln - nur wenn scharf), benannte Redstone-Ausgaenge, Protokoll |
+| ANLAGEN | HBM's NTM: Energiespeicher, Turbinen, Tanks, Geiger, Reaktoren (ZIRNOX, Forschung, PWR, Watz), RBMK-Raster mit Steuerung und AZ-5 |
+| LAGER | AE2: Items mit Suche, Bestellen, Auftraege, CPUs, Vorrat halten |
+| GERAETE | alle Komponenten (auch an Knoten), Verbund-Knoten, Waechter-Regeln (laufen auf dem Knoten auch ohne den Hauptrechner) |
+| SYSTEM | Rechner-Info, System-Check, Einstellungen (Schriftgroesse, Bildschirm), Meldungen, Update, Backup, Wartung |
+| NOTIZEN, RECHNER, DATEIEN | Merkzettel, Rechner + Umrechner, Dateien mit Editor |
+| KI | Claude ueber die API (eigener Schluessel), Werkzeuge fuer alle Bereiche mit Rechten je Bereich (frei/fragen/aus), Ereignis-Modus; Internet auch ueber einen Knoten |
 | SHELL | OpenOS-Shell, Lua-Konsole, Programme - nur mit Admin-Code |
 
 Mindestens: Gehaeuse T3, CPU T2, RAM 2x T2.5, Grafikkarte + Bildschirm T2 (80x25), Festplatte,
-Wireless-Karte T2, Data Card T2. Empfohlen: CPU T3, RAM 2x T3.5, Grafik + Bildschirm T3 (160x50),
-Internet Card. Updates: SYSTEM > UPDATE (liest `oc/manifest.lua`).
+Netzwerk- oder Wireless-Karte. Data Card ist am Hauptrechner nicht mehr Pflicht (SHA-256 notfalls in Lua),
+Tier 2 bringt AES. Empfohlen: CPU T3, RAM 2x T3.5, Grafik + Bildschirm T3 (z.B. 5x2 Bloecke = 160x32),
+Internet Card (hier oder an einem Knoten). Updates: SYSTEM > UPDATE (liest `oc/manifest.lua`).
 
 ## Dateien
 

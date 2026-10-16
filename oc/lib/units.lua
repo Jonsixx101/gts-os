@@ -1,11 +1,12 @@
 -- ======================================================================
 -- GTS OS (OpenComputers) - units: Drohnen und Robots im Schwarm
 -- ======================================================================
--- Ablauf: Drohne/Robot startet den GTS-Lader -> BOOT (gesiegelt) -> das OS
--- schickt das passende Programm in Teilen (CODE, mit SHA-256) -> das
--- Programm meldet sich alle paar Sekunden (UP). Befehle gehen als CMD mit
--- laufender Nummer; die Einheit antwortet mit ACK. Ohne ACK nach 4 s wird
--- einmal wiederholt.
+-- Ablauf: Drohne/Robot/Knoten startet den GTS-Lader -> BOOT (gesiegelt) ->
+-- das OS schickt das passende Programm in Teilen (CODE, je Teil gesiegelt)
+-- -> das Programm meldet sich alle paar Sekunden (UP). Befehle gehen als
+-- CMD mit laufender Nummer; die Einheit antwortet mit ACK. Ohne ACK nach
+-- 4 s wird einmal wiederholt. Knoten: CALL -> RES (Geraete-Aufrufe), EV
+-- (Ereignisse ihrer Geraete), grosse Nachrichten in Teilen (FR).
 return function(K, S, N)
 local computer = require("computer")
 local component = require("component")
@@ -15,34 +16,45 @@ local DBFILE = K.ROOT .. "/data/einheiten.db"
 local VISFILE = K.ROOT .. "/data/besucher.db"
 local db = S.load(DBFILE, { units = {}, groups = {}, points = {} })
 db.units, db.groups, db.points = db.units or {}, db.groups or {}, db.points or {}
+-- Ladestationen in Weltkoordinaten (F3): { id, name, x, y, z }; Start der Drohne = 1 Block darueber
+db.chargers = db.chargers or {}
+db.recon = db.recon or { r = 32, h = 12, shape = "ring" }
 U.db = db
 U.visitors = S.load(VISFILE, {})
 local CODE = {}
 function U.save() S.save(DBFILE, db) end
 
 -- Programme aus /gts/units laden (Pruefsumme fuer den Lader)
-local function hexHash(s)
-    local d = N.data
-    if not d then return "" end
-    return N.hex(d.sha256(s))
-end
-function U.program(kind)
-    local file = K.ROOT .. "/units/" .. kind .. ".lua"
-    local h = io.open(file, "r")
+local function hexHash(s) return K.Cr.sha256hex(s) end
+local function readFile(path)
+    local h = io.open(path, "r")
     if not h then return nil end
     local code = h:read("*a")
     h:close()
+    return code
+end
+function U.program(kind)
+    local code = readFile(K.ROOT .. "/units/" .. kind .. ".lua")
+    if not code then return nil end
+    if kind == "node" then
+        -- Knoten: ops (Aufrufe, Regeln) und crypto (SHA-256 in Lua) davor
+        local ops, cr = readFile(K.ROOT .. "/lib/ops.lua"), readFile(K.ROOT .. "/lib/crypto.lua")
+        if not ops or not cr then return nil end
+        code = "local O = (function()\n" .. ops .. "\nend)()\nlocal Cr = (function()\n" .. cr .. "\nend)()()\n" .. code
+    end
     if not CODE[kind] or CODE[kind].code ~= code then CODE[kind] = { code = code, hash = hexHash(code) } end
     return CODE[kind]
 end
 
-U.KIND = { drone = "Drohne", robot = "Robot", mc = "Mikrocontroller" }
+U.KIND = { drone = "Drohne", robot = "Robot", node = "Knoten", mc = "Knoten" }
+local function progFor(kind) return (kind == "robot" and "robot") or ((kind == "node" or kind == "mc") and "node") or "drone" end
+U.progFor = progFor
 local function unit(addr)
     local u = U.byAddr[addr]
     if not u then
         local saved = db.units[addr] or {}
         u = { addr = addr, name = saved.name, color = saved.color or 0x3DDC84, group = saved.group, kind = saved.kind,
-              online = false, seen = 0, log = {}, created = saved.created }
+              online = false, seen = 0, log = {}, created = saved.created, charger = saved.charger }
         U.byAddr[addr] = u
         U.list[#U.list + 1] = u
     end
@@ -50,7 +62,8 @@ local function unit(addr)
 end
 U.unit = unit
 function U.remember(u)
-    db.units[u.addr] = { name = u.name, color = u.color, group = u.group, kind = u.kind, created = u.created or K.realMs() }
+    db.units[u.addr] = { name = u.name, color = u.color, group = u.group, kind = u.kind, created = u.created or K.realMs(),
+                         charger = u.charger }
     U.save()
 end
 function U.label(u) return u.name or ((U.KIND[u.kind] or "Einheit") .. " " .. u.addr:sub(1, 4)) end
@@ -60,12 +73,13 @@ local function ulog(u, text)
 end
 U.ulog = ulog
 
--- Programm schicken (in Teilen zu 4000 Zeichen)
+-- Programm schicken (in Teilen zu 1000 Zeichen: jeder Teil wird auf der
+-- Gegenseite mit der Data Card geprueft, und die kostet Strom je Byte)
 function U.push(addr, kind)
     local p = U.program(kind)
     if not p then K.notify("Programm für " .. kind .. " fehlt", "bad") return false end
     local parts = {}
-    for i = 1, #p.code, 4000 do parts[#parts + 1] = p.code:sub(i, i + 3999) end
+    for i = 1, #p.code, 1000 do parts[#parts + 1] = p.code:sub(i, i + 999) end
     for i, d in ipairs(parts) do
         N.send(addr, { t = "CODE", n = i, of = #parts, h = p.hash, d = d, aes = N.aes })
     end
@@ -94,8 +108,31 @@ function U.cmdMany(list, cmd, argsFn, label)
 end
 
 -- Empfang
-local function onMsg(from, m, dist, mode)
+U.frag = {}
+U.onNode = {}          -- Knoten-Nachrichten fuer dev.lua: fn(u, m)
+local onMsg
+local function reassemble(from, m, dist, mode)
+    local key = from .. "|" .. tostring(m.id)
+    local f = U.frag[key] or { n = 0, t = computer.uptime() }
+    U.frag[key] = f
+    if type(m.n) ~= "number" or type(m.of) ~= "number" or m.of > 64 then U.frag[key] = nil return end
+    if not f[m.n] then f[m.n] = tostring(m.d or "") f.n = f.n + 1 end
+    if f.n < m.of then return end
+    U.frag[key] = nil
+    local inner = N.unser(table.concat(f, "", 1, m.of))
+    if type(inner) == "table" and inner.t ~= "FR" then onMsg(from, inner, dist, mode) end
+end
+onMsg = function(from, m, dist, mode)
+    if m.t == "FR" then return reassemble(from, m, dist, mode) end
     local u = unit(from)
+    if m.t == "RES" or (m.t == "EV" and (m.ev == "sig" or m.ev == "rule")) or (m.t == "UP" and m.kind == "node") then
+        u.seen = computer.uptime()
+        for _, fn in ipairs(U.onNode) do
+            local ok, err = pcall(fn, u, m, dist, mode)
+            if not ok then K.log("FEHLER", "Knoten: " .. tostring(err)) end
+        end
+        if m.t ~= "UP" then return end
+    end
     if m.t == "BOOT" then
         u.kind = m.kind or u.kind or "drone"
         u.caps = m.caps or {}
@@ -117,7 +154,7 @@ local function onMsg(from, m, dist, mode)
         end
         U.remember(u)
         ulog(u, "gestartet, Programm wird gesendet")
-        U.push(from, u.kind == "robot" and "robot" or "drone")
+        U.push(from, progFor(u.kind))
     elseif m.t == "UP" then
         local wasOff = not u.online
         u.online, u.seen, u.dist, u.secure = true, computer.uptime(), dist, mode == "E"
@@ -126,13 +163,15 @@ local function onMsg(from, m, dist, mode)
         u.task, u.st, u.v = m.task, m.st, m.v
         u.nav, u.ms, u.cl, u.geo = m.nav, m.ms, m.cl, m.geo
         u.inv, u.invMax, u.tool, u.mined, u.charging = m.inv, m.invMax, m.tool, m.mined, m.charging
+        u.recon, u.ch = m.recon, m.ch
+        u.mem, u.tot, u.inet = m.mem, m.tot, m.inet
         u.aes = m.aes == true
         if m.name and not u.name then u.name = m.name end
         u.hist = u.hist or {}
         u.hist[#u.hist + 1] = m.e or 0
         while #u.hist > 120 do table.remove(u.hist, 1) end
         if wasOff then ulog(u, "wieder online") end
-        if (m.e or 1) < 0.15 and not u.lowWarned then
+        if u.kind ~= "node" and (m.e or 1) < 0.15 and not u.lowWarned then
             u.lowWarned = true
             K.notify(U.label(u) .. ": Akku " .. math.floor((m.e or 0) * 100) .. " %", "warn", "drones")
         elseif (m.e or 0) > 0.5 then u.lowWarned = false end
@@ -158,9 +197,14 @@ local function onMsg(from, m, dist, mode)
             table.insert(U.visitors, 1, v)
             while #U.visitors > 200 do table.remove(U.visitors) end
             U.visDirty = true
+            local wx, wy, wz = U.toWorld(u, m.x, m.y, m.z)
+            if wx then v.wx, v.wy, v.wz = wx, wy, wz end
             local trusted = (name == K.set.owner)
             for _, t in ipairs(K.set.trusted or {}) do if t:lower() == name:lower() then trusted = true end end
-            if not trusted and name ~= "?" and not name:match("^entity%.") then
+            if K.sec then
+                -- SICHERHEIT entscheidet (Personen, Abwehr)
+                if not K.sec.trusted(name) then K.sec.intruder(name, U.label(u), wx and { x = wx, y = wy, z = wz } or nil) end
+            elseif not trusted and name ~= "?" and not name:match("^entity%.") then
                 local last = U.alerted and U.alerted[name]
                 U.alerted = U.alerted or {}
                 if not last or computer.uptime() - last > 120 then
@@ -211,15 +255,33 @@ function U.service()
             end
         end
         if U.visDirty then U.visDirty = false S.save(VISFILE, U.visitors) end
+        for k, f in pairs(U.frag) do if now - f.t > 20 then U.frag[k] = nil end end
+        pcall(chargeCheck, now)
     end
 end
 
+-- online: Einheiten (Drohnen + Robots), Drohnen, Robots, Knoten
 function U.online()
-    local n, d, r = 0, 0, 0
+    local n, d, r, k = 0, 0, 0, 0
     for _, u in ipairs(U.list) do
-        if u.online then n = n + 1 if u.kind == "robot" then r = r + 1 else d = d + 1 end end
+        if u.online then
+            if u.kind == "node" or u.kind == "mc" then k = k + 1
+            else n = n + 1 if u.kind == "robot" then r = r + 1 else d = d + 1 end end
+        end
     end
-    return n, d, r
+    return n, d, r, k
+end
+function U.isNode(u) return u.kind == "node" or u.kind == "mc" end
+-- nur Drohnen und Robots (ohne Knoten)
+function U.fleet()
+    local out = {}
+    for _, u in ipairs(U.list) do if not U.isNode(u) then out[#out + 1] = u end end
+    return out
+end
+function U.nodes()
+    local out = {}
+    for _, u in ipairs(U.list) do if U.isNode(u) and not u.waiting then out[#out + 1] = u end end
+    return out
 end
 function U.forget(addr)
     local u = U.byAddr[addr]
@@ -233,7 +295,110 @@ function U.accept(addr)
     if not u then return end
     u.waiting = nil
     U.remember(u)
-    U.push(addr, u.kind == "robot" and "robot" or "drone")
+    U.push(addr, progFor(u.kind))
+end
+
+-- Ladestationen und Weltkoordinaten ---------------------------------------------
+function U.addCharger(name, x, y, z)
+    local id = 1
+    for _, c in ipairs(db.chargers) do if c.id >= id then id = c.id + 1 end end
+    db.chargers[#db.chargers + 1] = { id = id, name = name, x = x, y = y, z = z }
+    U.save()
+    return id
+end
+function U.charger(id) for _, c in ipairs(db.chargers) do if c.id == id then return c end end end
+-- Startplatz einer Drohne in Weltkoordinaten (oder nil, wenn unbekannt)
+function U.homeOf(u)
+    if u.kind == "robot" or U.isNode(u) then return nil end
+    local c = u.charger and U.charger(u.charger)
+    if not c and #db.chargers == 1 then c = db.chargers[1] end
+    if not c then return nil end
+    return { x = c.x, y = c.y + 1, z = c.z }
+end
+function U.toWorld(u, x, y, z)
+    local h = U.homeOf(u)
+    x, y, z = x or u.x, y or u.y, z or u.z
+    if not h or x == nil then return nil end
+    return math.floor(h.x + x + 0.5), math.floor(h.y + y + 0.5), math.floor(h.z + z + 0.5)
+end
+function U.toLocal(u, wx, wy, wz)
+    local h = U.homeOf(u)
+    if not h then return nil end
+    return math.floor(wx - h.x + 0.5), math.floor(wy - h.y + 0.5), math.floor(wz - h.z + 0.5)
+end
+-- Mitte der Basis (fuer Karte und Aufklaerung): eigene Angabe, sonst erste Ladestation
+function U.base()
+    if db.base then return db.base end
+    local c = db.chargers[1]
+    if c then return { x = c.x, y = c.y, z = c.z } end
+end
+function U.worldMode() return U.base() ~= nil end
+
+-- Aufklaerung: Rundweg um die Basis (Weltkoordinaten), auf die Drohnen verteilt
+function U.reconRoute(r, h, shape)
+    local b = U.base()
+    if not b then return nil end
+    local pts = {}
+    local y = b.y + (h or 12)
+    if shape == "rechteck" then
+        local step = math.max(8, math.floor(r / 2))
+        for x = -r, r - 1, step do pts[#pts + 1] = { x = b.x + x, y = y, z = b.z - r } end
+        for z = -r, r - 1, step do pts[#pts + 1] = { x = b.x + r, y = y, z = b.z + z } end
+        for x = r, -r + 1, -step do pts[#pts + 1] = { x = b.x + x, y = y, z = b.z + r } end
+        for z = r, -r + 1, -step do pts[#pts + 1] = { x = b.x - r, y = y, z = b.z + z } end
+    else
+        local n = math.max(8, math.ceil(2 * math.pi * r / 12))
+        for i = 0, n - 1 do
+            local a = i / n * 2 * math.pi
+            pts[#pts + 1] = { x = math.floor(b.x + math.cos(a) * r + 0.5), y = y, z = math.floor(b.z + math.sin(a) * r + 0.5) }
+        end
+    end
+    return pts
+end
+function U.startRecon(list, r, h, shape)
+    local pts = U.reconRoute(r, h, shape)
+    if not pts then return 0, "Erst eine Ladestation eintragen (Weltkoordinaten)" end
+    db.recon = { r = r, h = h, shape = shape }
+    U.save()
+    local drones = {}
+    for _, u in ipairs(list) do if u.online and u.kind == "drone" and U.homeOf(u) then drones[#drones + 1] = u end end
+    if #drones == 0 then return 0, "Keine Drohne online mit bekannter Ladestation" end
+    for k, u in ipairs(drones) do
+        local loc = {}
+        for i, p in ipairs(pts) do local x, y, z = U.toLocal(u, p.x, p.y, p.z) loc[i] = { x = x, y = y, z = z } end
+        -- gleichmaessig verteilt starten
+        local start = math.floor((k - 1) * #pts / #drones) + 1
+        U.cmd(u.addr, "recon", { points = loc, start = start }, "Aufklärung r=" .. r)
+    end
+    K.log("INFO", "Aufklärung gestartet: " .. #drones .. " Drohne(n), Radius " .. r)
+    return #drones
+end
+
+-- Akku knapp: naechste freie Ladestation vorgeben (bei mehreren Stationen)
+local function chargeCheck(now)
+    if #db.chargers < 2 then return end
+    for _, u in ipairs(U.list) do
+        if u.online and u.kind == "drone" and u.e and not u.charging and u.task ~= "charge"
+           and u.e < ((K.set.homeAt or 25) + 8) / 100 and now - (u.chargeCmd or -1e9) > 60 then
+            local wx, wy, wz = U.toWorld(u)
+            if wx then
+                local taken = {}
+                for _, o in ipairs(U.list) do if o ~= u and o.chargeAt and (o.task == "charge" or o.charging) then taken[o.chargeAt] = true end end
+                local best, bd
+                for _, c in ipairs(db.chargers) do
+                    if not taken[c.id] then
+                        local d = (c.x - wx) ^ 2 + (c.y + 1 - wy) ^ 2 + (c.z - wz) ^ 2
+                        if not bd or d < bd then best, bd = c, d end
+                    end
+                end
+                if best then
+                    local x, y, z = U.toLocal(u, best.x, best.y + 1, best.z)
+                    u.chargeCmd, u.chargeAt = now, best.id
+                    U.cmd(u.addr, "charge", { x = x, y = y, z = z }, "laden an " .. best.name)
+                end
+            end
+        end
+    end
 end
 
 -- Wegpunkte (eigene, relativ zum Startplatz der Einheiten)
@@ -244,7 +409,7 @@ end
 
 -- EEPROM fuer Drohnen schreiben (Lader + Schluessel). Die EEPROM im PC
 -- wird ueberschrieben - vorher eine leere einsetzen!
-function U.flash(name)
+function U.flash(name, kind)
     if not component.isAvailable("eeprom") then return false, "keine EEPROM im Rechner" end
     local ee = component.eeprom
     local h = io.open(K.ROOT .. "/units/loader.min.lua", "r") or io.open(K.ROOT .. "/units/loader.lua", "r")
@@ -257,7 +422,7 @@ function U.flash(name)
     local ok, err = ee.set(code)
     if not ok and err then return false, tostring(err) end
     ee.setData(data)
-    ee.setLabel("GTS Drohne" .. ((name and name ~= "") and (" " .. name) or ""))
+    ee.setLabel((kind == "node" and "GTS Knoten" or "GTS Drohne") .. ((name and name ~= "") and (" " .. name) or ""))
     K.log("INFO", "EEPROM geschrieben: " .. tostring(name))
     return true
 end

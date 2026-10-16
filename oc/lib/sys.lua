@@ -9,20 +9,13 @@ local Y = { hist = { ram = {}, energy = {} }, update = { state = "idle" } }
 local REPO = "https://raw.githubusercontent.com/Jonsixx101/gts-os/main/oc/"
 Y.REPO = REPO
 
--- Komponenten mit Namen ------------------------------------------------
-Y.NAMES = {
-    gpu = "Grafikkarte", screen = "Bildschirm", keyboard = "Tastatur", filesystem = "Speicher", modem = "Netzwerk/Funk",
-    data = "Data Card", internet = "Internet Card", eeprom = "EEPROM", redstone = "Redstone", computer = "Computer",
-    tunnel = "Linked Card", hologram = "Hologramm", geolyzer = "Geolyzer", motion_sensor = "Bewegungssensor",
-    navigation = "Navigation", chunkloader = "Chunkloader", transposer = "Transposer", drone = "Drohne", robot = "Robot",
-    warpdriveShipController = "Schiffssteuerung", warpdriveRadar = "Radar", warpdriveCloakingCore = "Tarnung",
-    warpdriveLaserCamera = "Laser-Kamera", warpdriveLaser = "Laser", warpdriveTransporterCore = "Transporter",
-    warpdriveMiningLaser = "Mining-Laser", warpdriveForceFieldProjector = "Kraftfeld", warpdriveEnanReactorCore = "Reaktor",
-    sound = "Soundkarte", chat_box = "Chat Box", tape_drive = "Bandlaufwerk", printer3d = "3D-Drucker", disk_drive = "Laufwerk",
-}
+-- Komponenten mit Namen (aus dev.lua) ------------------------------------
 function Y.components()
     local out = {}
-    for addr, t in pairs(component.list()) do out[#out + 1] = { addr = addr, type = t, name = Y.NAMES[t] or t } end
+    for addr, t in pairs(component.list()) do
+        local _, name = K.dev.kind(t)
+        out[#out + 1] = { addr = addr, type = t, name = name }
+    end
     table.sort(out, function(a, b) return a.name < b.name end)
     return out
 end
@@ -93,7 +86,23 @@ function Y.check()
     elseif K.net.isDefault then add("warn", "Schwarm-Passwort: Standard", "In SYSTEM > EINSTELLUNGEN ein eigenes setzen, dann EEPROMs neu schreiben.")
     else add("ok", "Funk verschlüsselt", K.net.aes and "AES (Data Card Tier 2+)" or "gesiegelt (Data Card Tier 1)") end
     if d.wireless == false then add("warn", "Nur Kabelnetz", "Für Drohnen eine Wireless-Karte (Tier 2: 400 Blöcke) einbauen.") end
-    if not d.internet then add("warn", "Keine Internet Card", "Updates und KI brauchen eine Internet Card.") end
+    local inetNode = K.dev.inetNode()
+    if not d.internet and inetNode then add("ok", "Internet über Knoten", "Knoten " .. K.units.label(inetNode))
+    elseif not d.internet then add("warn", "Keine Internet Card", "Updates und KI brauchen eine Internet Card - hier oder an einem Knoten.") end
+    -- Krypto: Data Card und Lua-Ersatz
+    local st = K.Cr.test or K.Cr.selftest()
+    if not st.lua then add("bad", "SHA-256 in Lua falsch", "Bitte melden - Funk und Codes sind betroffen.")
+    elseif st.card == "fehlt" then add("ok", "SHA-256 in Lua", "Keine Data Card - Funk ist gesiegelt, ohne AES.")
+    elseif st.card ~= "ok" then add("warn", "Data Card: " .. st.card, "GTS OS rechnet SHA-256 dann in Lua. Oft hilft ein Capacitor am Rechner (Strompuffer).")
+    else add("ok", "Data Card geprüft", K.Cr.fails > 0 and (K.Cr.fails .. "x zu wenig Strom - in Lua gerechnet. Capacitor anschließen.") or "SHA-256 stimmt") end
+    -- Komponenten-Grenze
+    local n, cap = K.dev.limit()
+    if n >= cap then add("bad", "Komponenten: " .. n .. " / " .. cap, "Zu viele für die CPU - Geräte auf Knoten verteilen (GERÄTE > VERBUND) oder Server mit Component Bus.")
+    elseif n >= cap - 2 then add("warn", "Komponenten: " .. n .. " / " .. cap, "Fast voll - neue Geräte besser an einen Knoten.")
+    else add("ok", "Komponenten: " .. n .. " / " .. cap, "Platz für " .. (cap - n) .. " weitere") end
+    local nOn, nAll = 0, 0
+    for _, u in ipairs(K.units.nodes()) do nAll = nAll + 1 if u.online then nOn = nOn + 1 end end
+    if nAll > 0 then add(nOn == nAll and "ok" or "warn", "Verbund: " .. nOn .. " / " .. nAll .. " Knoten online", nOn == nAll and "" or "Knoten ohne Strom oder außer Reichweite?") end
     if not K.set.adminHash then add("warn", "Kein Admin-Code", "Shell und Lua sind nur mit dem Sperrcode geschützt.") end
     if not K.set.codeHash then add("warn", "Sperrcode: Standard 3344", "In SYSTEM > EINSTELLUNGEN ändern.") end
     for _, dk in ipairs(Y.disks()) do
@@ -102,14 +111,17 @@ function Y.check()
     local e = computer.energy() / math.max(1, computer.maxEnergy())
     if e < 0.2 then add("bad", "Strom knapp", math.floor(e * 100) .. " % im Puffer") end
     local off = 0
-    for _, u in ipairs(K.units.list) do if not u.online and not u.waiting then off = off + 1 end end
-    if off > 0 then add("warn", off .. " Einheit(en) offline", "In DROHNEN nachsehen (Akku leer, ausser Reichweite?).") end
+    for _, u in ipairs(K.units.fleet()) do if not u.online and not u.waiting then off = off + 1 end end
+    if off > 0 then add("warn", off .. " Einheit(en) offline", "In DROHNEN nachsehen (Akku leer, außer Reichweite?).") end
     if K.set.safeMode then add("warn", "Sicherer Modus", "Zusatz-Apps aus. In SYSTEM beenden.") end
     return list
 end
 
 -- Backup: Einstellungen, Einheiten, Besucher, Notizen ------------------
-local BACKUP = { "data/einstellungen.db", "data/einheiten.db", "data/besucher.db", "data/notizen.db", "data/schiff.db" }
+local BACKUP = { "data/einstellungen.db", "data/einheiten.db", "data/besucher.db", "data/notizen.db", "data/geraete.db",
+                 "data/regeln.db", "data/sicherheit.db", "data/vorrat.db", "data/ladestationen.db" }
+-- Dateien aus aelteren Fassungen, die es nicht mehr gibt
+Y.OBSOLETE = { "apps/games.lua", "apps/ship.lua", "lib/warp.lua", "data/schiff.db" }
 function Y.backup()
     local _, _, _, _ = K.localTime()
     local y, mo, d = K.localTime()
@@ -161,6 +173,10 @@ function Y.junk()
         end
     end
     walk(K.ROOT)
+    for _, f in ipairs(Y.OBSOLETE) do
+        local p = K.ROOT .. "/" .. f
+        if fs.exists(p) then list[#list + 1] = { path = p, why = "veraltet", size = fs.size(p) } end
+    end
     return list
 end
 function Y.clean()
@@ -170,9 +186,15 @@ function Y.clean()
 end
 
 -- Update ---------------------------------------------------------------
--- oc/manifest.lua: { version, notes, files = { { path, size, sha }, ... } }
+-- oc/manifest.lua: { version, notes, files = { { path, size, sum (Adler-32) }, ... } }
 local function fetch(url)
-    if not component.isAvailable("internet") then return nil, "keine Internet Card" end
+    if not component.isAvailable("internet") then
+        -- ueber einen Knoten mit Internet Card
+        local body, code = K.dev.httpViaNode(url .. "?t=" .. math.floor(K.realMs() / 60000), nil, nil, nil, false)
+        if not body then return nil, code end
+        if code >= 400 then return nil, "HTTP " .. code end
+        return body
+    end
     local inet = component.internet
     local ok, h = pcall(inet.request, url .. "?t=" .. math.floor(K.realMs() / 60000))
     if not ok or not h then return nil, tostring(h) end
@@ -239,15 +261,12 @@ function Y.installUpdate()
     local stage = K.ROOT .. "/.update"
     if fs.exists(stage) then fs.remove(stage) end
     fs.makeDirectory(stage)
-    local data = component.isAvailable("data") and component.data
     for _, f in ipairs(man.files) do
         local body, err = fetch(REPO .. f.path)
         if not body then U.state, U.err = "error", f.path .. ": " .. tostring(err) K.dirty = true return end
         if f.size and #body ~= f.size then U.state, U.err = "error", f.path .. ": Größe falsch" K.dirty = true return end
-        if data and f.sha then
-            local h = (data.sha256(body):gsub(".", function(c) return string.format("%02x", c:byte()) end))
-            if h ~= f.sha then U.state, U.err = "error", f.path .. ": Prüfsumme falsch" K.dirty = true return end
-        end
+        -- Adler-32 in Lua (die Data Card braucht fuer grosse Dateien mehr Strom als im Puffer ist)
+        if f.sum and K.Cr.adler(body) ~= f.sum then U.state, U.err = "error", f.path .. ": Prüfsumme falsch" K.dirty = true return end
         if not S.write(stage .. "/" .. f.path, body) then U.state, U.err = "error", "Speicher voll" K.dirty = true return end
         U.done = U.done + 1
         K.dirty = true
@@ -259,6 +278,9 @@ function Y.installUpdate()
         S.copy(stage .. "/" .. f.path, dst)
     end
     fs.remove(stage)
+    for _, f in ipairs(Y.OBSOLETE) do
+        if f:match("%.lua$") and fs.exists(K.ROOT .. "/" .. f) then fs.remove(K.ROOT .. "/" .. f) end
+    end
     K.set.updatedFrom = K.VERSION
     K.save()
     U.state = "ready"
@@ -284,6 +306,8 @@ function Y.service()
             if K.set.lastBackup ~= day then pcall(Y.backup) end
             if K.set.autoUpdate ~= false and component.isAvailable("internet") then Y.checkUpdate() end
         end
+        -- Bildschirm veraendert? (Bloecke angebaut, anderer Bildschirm)
+        if computer.uptime() - (Y.lastScr or 0) > 30 then Y.lastScr = computer.uptime() pcall(K.checkScreen) end
         if K.set.safeMode and computer.uptime() > 600 and #(K.set.crashes or {}) > 0 then
             K.set.crashes = {}
             K.save()

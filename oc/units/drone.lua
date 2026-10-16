@@ -5,8 +5,10 @@
 -- Navigation-Upgrade in Kartenkoordinaten nachgefuehrt.
 -- Fliegt auf Reisehoehe (Start + cruise), dann waagerecht, dann runter.
 -- Akku unter homeAt %: heim zum Charger, laden bis 95 %, Auftrag weiter.
+-- Das GTS OS kann eine naehere freie Ladestation vorgeben (Befehl charge).
+-- Aufklaerung (recon): Rundflug um die Basis, der Bewegungssensor meldet.
 local ctx = ...
-local VERSION = "1.0"
+local VERSION = "1.1"
 local cp = component or require("component")
 local pc = computer or require("computer")
 local function first(t) for a in cp.list(t) do return cp.proxy(a) end end
@@ -17,7 +19,7 @@ local cl = first("chunkloader")
 local mo = ctx.modem
 local OS = ctx.os
 
-local cfg = { cruise = 8, homeAt = 25, beat = 5, light = 0x3DDC84, sens = true, name = ctx.name ~= "" and ctx.name or nil }
+local cfg = { cruise = 8, homeAt = 25, beat = 5, light = 0x3DDC84, sens = true, name = ctx.name ~= "" and ctx.name or nil, spot = false }
 local pos = { x = 0, y = 0, z = 0 }      -- geplant (Ziel der letzten Bewegung)
 local navHome
 if nav then local x, y, z = nav.getPosition() if x then navHome = { x = x, y = y, z = z } end end
@@ -112,6 +114,8 @@ local function startTask(t)
   if t.kind == "goto" then goTo(t.p) setStatus("fliegt")
   elseif t.kind == "home" then goTo({ x = 0, y = 0, z = 0 }) setStatus("heim")
   elseif t.kind == "patrol" then t.i = 1 goTo(t.points[1]) setStatus("Patrouille")
+  elseif t.kind == "recon" then t.i = t.i or 1 goTo(t.points[t.i]) setStatus("Aufklärung")
+  elseif t.kind == "charge" then goTo(t.p or { x = 0, y = 0, z = 0 }) setStatus("zum Laden")
   elseif t.kind == "guard" then goTo(t.p) setStatus("Wache")
   elseif t.kind == "courier" then t.phase = "hin" goTo(t.from) setStatus("Kurier: holen")
   elseif t.kind == "stop" or t.kind == "idle" then legs = {} leg = nil pcall(dr.move, 0, 0, 0) setStatus("bereit") task = { kind = "idle" } end
@@ -125,9 +129,9 @@ local function tickTask()
     if task.kind == "idle" and math.abs(pos.x) + math.abs(pos.y) + math.abs(pos.z) > 2 then
       resume = { kind = "goto", p = { x = pos.x, y = pos.y, z = pos.z } }
     end
-    task = { kind = "charge" }
-    goTo({ x = 0, y = 0, z = 0 })
-    setStatus("Akku leer - heim")
+    task = { kind = "charge", p = cfg.spot }
+    goTo(cfg.spot or { x = 0, y = 0, z = 0 })
+    setStatus("Akku leer - laden")
   end
   if task.kind == "charge" then
     if #legs == 0 and not leg then
@@ -156,7 +160,7 @@ local function tickTask()
     setStatus("zu Hause")
     send({ t = "DONE", task = "home" })
     task = { kind = "idle" }
-  elseif task.kind == "patrol" then
+  elseif task.kind == "patrol" or task.kind == "recon" then
     task.i = task.i % #task.points + 1
     if task.i == 1 and not task.loop then setStatus("Patrouille fertig") task = { kind = "idle" } return end
     goTo(task.points[task.i])
@@ -193,6 +197,17 @@ local function handle(m)
   elseif m.cmd == "patrol" then
     if type(a.points) == "table" and #a.points > 0 then startTask({ kind = "patrol", points = a.points, loop = a.loop ~= false })
     else ok, msg = false, "keine Punkte" end
+  elseif m.cmd == "recon" then
+    if type(a.points) == "table" and #a.points > 1 then startTask({ kind = "recon", points = a.points, i = tonumber(a.start) or 1, loop = true })
+    else ok, msg = false, "keine Punkte" end
+  elseif m.cmd == "charge" then
+    if task.kind ~= "charge" then
+      resume = task
+      if task.kind == "idle" and math.abs(pos.x) + math.abs(pos.y) + math.abs(pos.z) > 2 then
+        resume = { kind = "goto", p = { x = pos.x, y = pos.y, z = pos.z } }
+      end
+    end
+    startTask({ kind = "charge", p = { x = a.x, y = a.y, z = a.z } })
   elseif m.cmd == "guard" then startTask({ kind = "guard", p = { x = a.x, y = a.y, z = a.z } })
   elseif m.cmd == "courier" then startTask({ kind = "courier", from = a.from, to = a.to, rounds = a.rounds or 1 })
   elseif m.cmd == "light" then light(tonumber(a.c) or 0xFFFFFF)

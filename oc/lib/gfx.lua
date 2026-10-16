@@ -112,6 +112,15 @@ function G.init(gpuProxy, scr, want)
         w, h = math.min(mw, want.w), math.min(mh, want.h)
     elseif want and want.aw then
         w, h = G.autoResolution(mw, mh, want.aw, want.ah)
+        -- Skalierung: weniger Zeichen, groessere Schrift (nicht unter 80x25)
+        local f = want.f or 1
+        if f < 1 then
+            local ratio = w / h
+            local nh = math.max(25, math.floor(h * f + 0.5))
+            local nw = math.floor(nh * ratio + 0.5)
+            if nw < 80 then nw = 80 nh = math.max(25, math.floor(nw / ratio + 0.5)) end
+            w, h = math.min(mw, nw), math.min(mh, nh)
+        end
     end
     pcall(gpu.setResolution, w, h)
     W, H = gpu.getResolution()

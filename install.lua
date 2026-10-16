@@ -36,7 +36,60 @@ if okOC and type(component) == "table" and component.isAvailable then
         if a == "" and default then a = default end
         return a
     end
-    local function hex(s) return (s:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
+    local function hex(s)
+        if type(s) ~= "string" then return "" end
+        return (s:gsub(".", function(c) return string.format("%02x", c:byte()) end))
+    end
+    -- SHA-256 in Lua: die Data Card wirft "not enough energy", wenn der Puffer
+    -- des Rechners (500 ohne Capacitor) fuer grosse Daten nicht reicht.
+    local bit = bit32
+    if not bit then local okb, b = pcall(require, "bit32") if okb then bit = b end end
+    local band, bxor, bnot, rshift, rrot = bit.band, bit.bxor, bit.bnot, bit.rshift, bit.rrotate
+    local KT = {}
+    do
+        local primes, n = {}, 2
+        while #primes < 64 do
+            local p = true
+            for d = 2, math.floor(math.sqrt(n)) do if n % d == 0 then p = false break end end
+            if p then primes[#primes + 1] = n end
+            n = n + 1
+        end
+        for i, pr in ipairs(primes) do local c = pr ^ (1 / 3) KT[i] = math.floor((c - math.floor(c)) * 4294967296) end
+    end
+    local function be32(v) return string.char(band(rshift(v, 24), 255), band(rshift(v, 16), 255), band(rshift(v, 8), 255), band(v, 255)) end
+    local function luaSha(msg)
+        local ml, M32 = #msg, 4294967296
+        msg = msg .. "\128" .. string.rep("\0", (55 - ml) % 64) .. be32(math.floor(ml * 8 / M32)) .. be32(ml * 8 % M32)
+        local H = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 }
+        local w = {}
+        for p = 1, #msg, 64 do
+            for i = 0, 15 do local a, b, c, d = msg:byte(p + i * 4, p + i * 4 + 3) w[i] = ((a * 256 + b) * 256 + c) * 256 + d end
+            for i = 16, 63 do
+                local x, y = w[i - 15], w[i - 2]
+                w[i] = (w[i - 16] + bxor(rrot(x, 7), rrot(x, 18), rshift(x, 3)) + w[i - 7] + bxor(rrot(y, 17), rrot(y, 19), rshift(y, 10))) % M32
+            end
+            local a, b, c, d, e, f, g, h = H[1], H[2], H[3], H[4], H[5], H[6], H[7], H[8]
+            for i = 0, 63 do
+                local t1 = (h + bxor(rrot(e, 6), rrot(e, 11), rrot(e, 25)) + bxor(band(e, f), band(bnot(e), g)) + KT[i + 1] + w[i]) % M32
+                local t2 = (bxor(rrot(a, 2), rrot(a, 13), rrot(a, 22)) + bxor(band(a, b), band(a, c), band(b, c))) % M32
+                h, g, f, e, d, c, b, a = g, f, e, (d + t1) % M32, c, b, a, (t1 + t2) % M32
+            end
+            H[1], H[2], H[3], H[4] = (H[1] + a) % M32, (H[2] + b) % M32, (H[3] + c) % M32, (H[4] + d) % M32
+            H[5], H[6], H[7], H[8] = (H[5] + e) % M32, (H[6] + f) % M32, (H[7] + g) % M32, (H[8] + h) % M32
+        end
+        local out = {}
+        for i = 1, 8 do out[i] = be32(H[i]) end
+        return table.concat(out)
+    end
+    -- Adler-32 (Pruefsumme der Downloads, ohne Data Card)
+    local function adler(s)
+        local a, b = 1, 0
+        for i = 1, #s, 2048 do
+            for k = i, math.min(#s, i + 2047) do a = a + s:byte(k) b = b + a end
+            a, b = a % 65521, b % 65521
+        end
+        return string.format("%08x", b * 65536 + a)
+    end
 
     say("GTS OS Installer · OpenComputers", GREEN)
     if not component.isAvailable("internet") then say("Es fehlt eine Internet Card.", RED) return end
@@ -95,11 +148,24 @@ if okOC and type(component) == "table" and component.isAvailable then
     if not okm or type(man) ~= "table" or type(man.files) ~= "table" then say("Dateiliste unlesbar", RED) return end
     local data = component.isAvailable("data") and component.data or nil
 
+    -- SHA-256: Data Card, sonst Lua (gleiches Ergebnis)
+    local function sha(s)
+        if data and #s <= 8192 then
+            local ok, h = pcall(data.sha256, s)
+            if ok and type(h) == "string" and #h == 32 then return h end
+        end
+        return luaSha(s)
+    end
     local function fetchFile(entry)
         local body, e = get(entry.path)
         if not body then return nil, e end
         if entry.size and #body ~= entry.size then return nil, "Größe stimmt nicht" end
-        if data and entry.sha and hex(data.sha256(body)) ~= entry.sha then return nil, "Prüfsumme falsch" end
+        if entry.sum then
+            if adler(body) ~= entry.sum then return nil, "Prüfsumme falsch" end
+        elseif data and data.sha256 and entry.sha then
+            local ok, rawHash = pcall(data.sha256, body)
+            if ok and type(rawHash) == "string" and hex(rawHash) ~= entry.sha then return nil, "Prüfsumme falsch" end
+        end
         return body
     end
 
@@ -119,8 +185,8 @@ if okOC and type(component) == "table" and component.isAvailable then
         local port = tonumber(ask("Funk-Port:", "4711")) or 4711
         local name = ask("Name des Robots:", "Robot"):sub(1, 16)
         -- Schluessel wie im GTS OS (net.lua: N.derive)
-        local k = data.sha256("GTS-OC-1|" .. pw)
-        for _ = 1, 64 do k = data.sha256(k .. pw) end
+        local k = sha("GTS-OC-1|" .. pw)
+        for _ = 1, 64 do k = sha(k .. pw) end
         write("/gts/units/loader.lua", body)
         write("/gts/unit.cfg", "GTS1|" .. hex(k) .. "|" .. port .. "|" .. name)
         startup("/gts/units/loader.lua")
@@ -139,7 +205,7 @@ if okOC and type(component) == "table" and component.isAvailable then
     say("GTS OS " .. man.version .. " für OpenComputers - " .. #man.files .. " Dateien, " .. math.floor(need / 1024) .. " KB", GREEN)
     if free < need + 32768 then say("Zu wenig Platz auf der Festplatte (" .. math.floor(free / 1024) .. " KB frei).", RED) return end
     if not component.isAvailable("gpu") or not component.isAvailable("screen") then say("Hinweis: Grafikkarte/Bildschirm fehlt.", YELLOW) end
-    if not data then say("Hinweis: ohne Data Card kein verschlüsselter Funk (Drohnen brauchen sie).", YELLOW) end
+    if not data then say("Hinweis: ohne Data Card kein AES - der Funk ist trotzdem gesiegelt (Drohnen brauchen eine eigene).", YELLOW) end
     local stage = "/gts/.install"
     if fs.exists(stage) then fs.remove(stage) end
     for i, e in ipairs(man.files) do

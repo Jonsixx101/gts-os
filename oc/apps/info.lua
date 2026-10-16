@@ -26,12 +26,15 @@ local function drawInfo(x, y, w, h)
     UI.kv(ix, iy + 1, iw, "Prozessor", d.cpu .. (d.cpuClock and ("  ·  " .. d.cpuClock .. " Takt") or ""), nil, kw)
     UI.kv(ix, iy + 2, iw, "Arbeitsspeicher", K.bytes(computer.totalMemory()) .. "  ·  " .. K.bytes(computer.freeMemory()) .. " frei", nil, kw)
     UI.kv(ix, iy + 3, iw, "Grafik", "Tier " .. (d.gpuTier or "?") .. "  ·  max " .. d.gpuRes .. "  ·  " .. (d.gpuDepth or 0) .. " Bit", nil, kw)
-    UI.kv(ix, iy + 4, iw, "Bildschirm", K.w .. "x" .. K.h .. (K.hasKeyboard and "  ·  mit Tastatur" or "  ·  ohne Tastatur"), nil, kw)
+    UI.kv(ix, iy + 4, iw, "Bildschirm", K.w .. "x" .. K.h .. " · " .. tostring(K.aspect) .. " Bl." .. (K.hasKeyboard and "  ·  mit Tastatur" or "  ·  ohne Tastatur"), nil, kw)
     UI.kv(ix, iy + 5, iw, "Energie", string.format("%d / %d", math.floor(computer.energy()), math.floor(computer.maxEnergy())), nil, kw)
     UI.kv(ix, iy + 6, iw, "Laufzeit", K.ago(computer.uptime()), nil, kw)
-    UI.kv(ix, iy + 7, iw, "Data Card", d.dataTier and ("Tier " .. d.dataTier .. (d.dataTier >= 2 and "  ·  AES" or "  ·  nur Siegel")) or "fehlt", (not d.dataTier) and C.warn or C.text, kw)
+    UI.kv(ix, iy + 7, iw, "Data Card", d.dataTier and ("Tier " .. d.dataTier .. (d.dataTier >= 2 and "  ·  AES" or "  ·  nur Siegel")) or "keine (SHA-256 in Lua, kein AES)", nil, kw)
     UI.kv(ix, iy + 8, iw, "Funk", K.net.ready and ((K.net.wireless and "drahtlos 400 Bl." or "Kabel") .. "  ·  Port " .. K.net.port) or tostring(K.net.reason), K.net.ready and C.text or C.bad, kw)
-    UI.kv(ix, iy + 9, iw, "Internet", d.internet and "ja" or "nein", nil, kw)
+    local inode = K.dev.inetNode()
+    UI.kv(ix, iy + 9, iw, "Internet", d.internet and "ja" or (inode and ("über Knoten " .. K.units.label(inode)) or "nein"), nil, kw)
+    local nc, cap = K.dev.limit()
+    UI.kv(ix, iy + 10, iw, "Komponenten", nc .. " / " .. cap .. " (CPU-Grenze)", nc >= cap and C.bad or (nc >= cap - 2 and C.warn or nil), kw)
     -- Verlaeufe
     local gx, gy = wide and (x + col + 2) or x, wide and y or (y + 14)
     local gw = wide and (w - col - 2) or w
@@ -124,8 +127,6 @@ local function drawSettings(x, y, w, h)
             K.askAdmin("Admin-Code (bisher)", function() codeTwice("Admin-Code", "adminHash") end) end } }, not K.set.adminHash and C.warn)
         r("Auto-Sperre", (K.set.autoLock or 0) > 0 and (K.set.autoLock .. " min") or "aus", choice("autoLock", { 2, 5, 10, 30, 0 }, function(v) return v == 0 and "AUS" or tostring(v) end))
         r("Jetzt sperren", nil, { { text = "SPERREN", style = "secondary", onClick = function() K.lock() end } })
-        r("Sprung/Autopilot", K.set.jumpAdmin and "nur mit Admin-Code" or "Sprung mit Bestätigung + Countdown", { { text = K.set.jumpAdmin and "LOCKERN" or "ADMIN-CODE", style = "subtle",
-            onClick = function() K.askAdmin("Admin-Code", function() K.setting("jumpAdmin", not K.set.jumpAdmin) end) end } })
         r("Vertraute Spieler", #(K.set.trusted or {}) > 0 and table.concat(K.set.trusted, ", ") or "keine",
           { { text = "+", w = 3, style = "subtle", onClick = function()
               UI.prompt({ title = "Spielername", maxLen = 16, onOk = function(t) local l = K.set.trusted or {} l[#l + 1] = t K.setting("trusted", l) end })
@@ -135,10 +136,23 @@ local function drawSettings(x, y, w, h)
             UI.prompt({ title = "Dein Spielername", text = K.set.owner, maxLen = 16, onOk = function(t) K.setting("owner", t) end }) end } })
         r("Zeitzone", K.set.tz == "berlin" and "Berlin (Sommerzeit automatisch)" or ("UTC" .. (K.set.tz >= 0 and "+" or "") .. K.set.tz),
           choice("tz", { "berlin", 0, 1, 2 }, function(v) return v == "berlin" and "BERLIN" or ("UTC+" .. v) end))
-        r("Auflösung", type(K.set.res) == "table" and (K.set.res[1] .. "x" .. K.set.res[2]) or "automatisch (passend zum Bildschirm)",
-          { { text = "AUTO", style = K.set.res == "auto" and "primary" or "subtle", onClick = function() K.setting("res", "auto") K.initScreen() end },
-            { text = "100x32", style = "subtle", onClick = function() K.setting("res", { 100, 32 }) K.initScreen() end },
-            { text = "160x50", style = "subtle", onClick = function() K.setting("res", { 160, 50 }) K.initScreen() end } })
+        local scaleBtns = {}
+        for _, sc in ipairs(K.SCALES) do
+            scaleBtns[#scaleBtns + 1] = { text = sc.text, style = (K.set.res == "auto" and K.set.scale == sc.id) and "primary" or "subtle",
+                                          onClick = function() K.set.res = "auto" K.setting("scale", sc.id) K.initScreen() end }
+        end
+        r("Schriftgröße", K.w .. "x" .. K.h .. " Zeichen · Bildschirm " .. tostring(K.aspect) .. " Blöcke", scaleBtns)
+        local scr = K.screens()
+        r("Bildschirm", #scr .. " gefunden" .. (#scr > 1 and (K.set.screen and " · fest gewählt" or " · größter") or ""),
+          { { text = "NEU ERKENNEN", style = "secondary", onClick = function() K.initScreen() K.notify("Anzeige: " .. K.w .. "x" .. K.h, "ok") end },
+            { text = "WÄHLEN", style = "subtle", disabled = #scr < 2, onClick = function()
+                local items = { { text = "IMMER DER GRÖSSTE", onClick = function() K.setting("screen", nil) K.initScreen() end } }
+                for _, sc in ipairs(scr) do
+                    items[#items + 1] = { text = (sc.on and "● " or "○ ") .. sc.aw .. "x" .. sc.ah .. " Blöcke" .. (sc.kb and " · Tastatur" or ""), sub = sc.addr:sub(1, 8),
+                                          onClick = function() K.setting("screen", sc.addr) K.initScreen() end }
+                end
+                UI.menu("Welcher Bildschirm?", items)
+            end } })
         r("Töne", K.set.sound and "an" or "aus", { { text = K.set.sound and "AUS" or "AN", style = "subtle", onClick = function() K.setting("sound", not K.set.sound) end } })
         r("Updates suchen", K.set.autoUpdate == false and "von Hand" or "täglich", { { text = K.set.autoUpdate == false and "TÄGLICH" or "VON HAND", style = "subtle",
             onClick = function() K.setting("autoUpdate", K.set.autoUpdate == false) end } })
