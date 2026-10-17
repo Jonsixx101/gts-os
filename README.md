@@ -17,7 +17,7 @@ Der Installer erkennt das Geraet (PC, Pocket: Tablet, Phone oder Claude-Fernbedi
 passende Datei, prueft sie und richtet sie als `startup.lua` ein. Turtles danach mit
 `P` das Schwarm-Passwort geben - oder bequemer am PC: DATEN > TURTLE-DISK.
 
-## OpenComputers (Minecraft 1.7.10) - GTS OS 1.1 fuer OC
+## OpenComputers (Minecraft 1.7.10) - GTS OS 1.2 fuer OC
 
 Eigene Fassung im Ordner `oc/` fuer OpenComputers (im Simulator gegen die OC-API getestet, Lua 5.2 und 5.3,
 80x25 bis 160x50 - im Spiel noch nicht). Gebaut fuer NNC Nuclear Nexus: HBM's Nuclear Tech, OpenSecurity,
@@ -44,7 +44,7 @@ DROHNEN > EINRICHTEN bzw. GERAETE > VERBUND.
 | GERAETE | alle Komponenten (auch an Knoten), Verbund-Knoten, Waechter-Regeln (laufen auf dem Knoten auch ohne den Hauptrechner) |
 | SYSTEM | Rechner-Info, System-Check, Einstellungen (Schriftgroesse, Bildschirm), Meldungen, Update, Backup, Wartung |
 | NOTIZEN, RECHNER, DATEIEN | Merkzettel, Rechner + Umrechner, Dateien mit Editor |
-| KI | Claude ueber die API (eigener Schluessel), Werkzeuge fuer alle Bereiche mit Rechten je Bereich (frei/fragen/aus), Ereignis-Modus; Internet auch ueber einen Knoten |
+| KI | Claude ueber die API (eigener Schluessel), Werkzeuge fuer alle Bereiche mit Rechten je Bereich (frei/fragen/aus), Ereignis-Modus; steuert Drohnen und Robots selbst (Abbauen, Scan, Ziel, Kurier, Rundflug) - mit Schwarm-Autopilot und Dauerauftrag; Internet auch ueber einen Knoten |
 | SHELL | OpenOS-Shell, Lua-Konsole, Programme - nur mit Admin-Code |
 
 Mindestens: Gehaeuse T3, CPU T2, RAM 2x T2.5, Grafikkarte + Bildschirm T2 (80x25), Festplatte,

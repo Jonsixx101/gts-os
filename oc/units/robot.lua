@@ -6,7 +6,7 @@
 -- Zu Hause steht der Robot auf einer Kiste (Abladen nach unten) und neben
 -- einem Charger.
 local ctx = ...
-local VERSION = "1.1"
+local VERSION = "1.2"
 local cp = component or require("component")
 local pc = computer or require("computer")
 local function first(t) for a in cp.list(t) do return cp.proxy(a) end end
@@ -159,7 +159,7 @@ local function startTask(kind, a)
     elseif kind == "unload" then goHome() unload() setStatus("abgeladen")
     elseif kind == "scan" then setStatus("scannt") local ok, err = scan(a) setStatus(ok and "Scan fertig" or err)
     end
-    send({ t = "DONE", task = kind, mined = mined })
+    send({ t = "DONE", task = kind, mined = mined, st = status })
   end)
 end
 

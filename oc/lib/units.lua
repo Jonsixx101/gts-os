@@ -72,6 +72,10 @@ local function ulog(u, text)
     while #u.log > 20 do table.remove(u.log) end
 end
 U.ulog = ulog
+-- Ereignis fuer die KI (Autopilot): fn(u, art, text)
+local function hook(u, what, text)
+    if K.onUnit then pcall(K.onUnit, u, what, text) end
+end
 
 -- Programm schicken (in Teilen zu 1000 Zeichen: jeder Teil wird auf der
 -- Gegenseite mit der Data Card geprueft, und die kostet Strom je Byte)
@@ -174,6 +178,7 @@ onMsg = function(from, m, dist, mode)
         if u.kind ~= "node" and (m.e or 1) < 0.15 and not u.lowWarned then
             u.lowWarned = true
             K.notify(U.label(u) .. ": Akku " .. math.floor((m.e or 0) * 100) .. " %", "warn", "drones")
+            hook(u, "akku", U.label(u) .. " hat nur noch " .. math.floor((m.e or 0) * 100) .. " % Akku")
         elseif (m.e or 0) > 0.5 then u.lowWarned = false end
         K.dirty = true
     elseif m.t == "ACK" then
@@ -188,6 +193,7 @@ onMsg = function(from, m, dist, mode)
     elseif m.t == "DONE" then
         ulog(u, "fertig: " .. tostring(m.task))
         if m.task ~= "goto" and m.task ~= "home" then K.notify(U.label(u) .. ": " .. tostring(m.task) .. " fertig", "ok", "drones") end
+        hook(u, "fertig", U.label(u) .. " hat den Auftrag " .. tostring(m.task) .. " beendet" .. (m.st and (" - Status: " .. tostring(m.st)) or "") .. (m.mined and m.mined > 0 and (" (" .. m.mined .. " Blöcke abgebaut)") or ""))
         K.dirty = true
     elseif m.t == "EV" then
         u.seen = computer.uptime()
@@ -216,10 +222,12 @@ onMsg = function(from, m, dist, mode)
         elseif m.ev == "blocked" then
             K.notify(U.label(u) .. " ist blockiert", "warn", "drones")
             ulog(u, "blockiert bei " .. tostring(m.x) .. "," .. tostring(m.y) .. "," .. tostring(m.z))
+            hook(u, "blockiert", U.label(u) .. " ist blockiert (Position relativ " .. tostring(m.x) .. " " .. tostring(m.y) .. " " .. tostring(m.z) .. ")")
         elseif m.ev == "scan" then
             u.scan = m.hits
             ulog(u, "Scan: " .. #(m.hits or {}) .. " Treffer")
             K.notify(U.label(u) .. ": Scan fertig (" .. #(m.hits or {}) .. ")", "ok", "drones")
+            hook(u, "scan", U.label(u) .. ": Scan fertig, " .. #(m.hits or {}) .. " Treffer (Werkzeug scan_result)")
         elseif m.ev == "progress" then
             u.progress = { layer = m.layer, of = m.of, mined = m.mined }
         end
@@ -238,6 +246,7 @@ function U.service()
             if u.online and now - u.seen > hb then
                 u.online = false
                 ulog(u, "offline")
+                if not U.isNode(u) then hook(u, "offline", U.label(u) .. " ist offline (Akku leer, zerstört oder außer Reichweite?)") end
                 K.dirty = true
             end
         end

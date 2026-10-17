@@ -118,6 +118,12 @@ local function main()
     end
     K.onIntruder = function(name, where) kiEvent("Fremder Spieler \"" .. tostring(name) .. "\" gesehen bei " .. tostring(where)) end
     K.onRule = function(r, v, why) kiEvent("Wächter \"" .. tostring(r and r.name or "?") .. "\" hat ausgelöst" .. (why and (": " .. why) or "")) end
+    -- Schwarm-Autopilot (KI > EINSTELLUNGEN > AUTOPILOT)
+    K.onUnit = function(u, what, text)
+        if not K.set.kiAuto then return end
+        local ok, ki = pcall(K.module, "ki")
+        if ok and ki and ki.unitEvent then pcall(ki.unitEvent, what, text) end
+    end
     K.locked = K.set.setupDone
     if not K.set.setupDone then K.open("setup") else K.open("home") end
     K.log("INFO", "GTS OS " .. K.VERSION .. " gestartet" .. (K.set.safeMode and " (sicherer Modus)" or ""))

@@ -8,7 +8,7 @@ local fs = require("filesystem")
 local K = { apps = {}, byId = {}, app = nil, appId = nil, notes = {}, toast = nil, locked = true,
             services = {}, dirty = true, running = true, lastInput = 0, ROOT = ROOT, loaded = {} }
 local C = G.C
-K.VERSION = "1.1.0"
+K.VERSION = "1.2.0"
 K.EDITION = "oc"
 
 -- ---------------------------------------------------------------------
