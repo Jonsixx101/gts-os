@@ -145,17 +145,9 @@ pcall(function()
     local gpu = component.gpu
     local w, h = gpu.maxResolution()
     pcall(gpu.setResolution, w, h)
-    -- Standard-Palette der Grafikkarte wiederherstellen (wie ab Werk)
-    local depth = gpu.getDepth()
-    local pal
-    if depth == 8 then
-        pal = {}
-        for i = 1, 16 do local v = math.floor(255 * i / 17) pal[i] = v * 65536 + v * 256 + v end
-    elseif depth == 4 then
-        pal = { 0xFFFFFF, 0xFFCC33, 0xCC66CC, 0x6699FF, 0xFFFF33, 0x33CC33, 0xFF6699, 0x333333,
-                0xCCCCCC, 0x336699, 0x9933CC, 0x333399, 0x663300, 0x336600, 0xFF3333, 0x000000 }
-    end
-    if pal then for i = 0, 15 do pcall(gpu.setPaletteColor, i, pal[i + 1]) end end
+    -- Standard-Palette wiederherstellen: setDepth setzt sie bei Server und
+    -- Spieler zurueck (16x setPaletteColor kostete 1,6 s Pause)
+    pcall(gpu.setDepth, gpu.getDepth())
     gpu.setBackground(0x000000)
     gpu.setForeground(0xFFFFFF)
     gpu.fill(1, 1, w, h, " ")

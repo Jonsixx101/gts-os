@@ -9,8 +9,19 @@
 -- und je Zeile nur ein Schluessel-Text fuer den Vergleich - bei 160x50
 -- rund 300 KB statt 1,2 MB.
 --
--- Farben: Zahlen 0..15 sind Palettenplaetze (das Thema legt sie exakt
--- fest - auf Tier 2 und Tier 3 gleich), groessere Zahlen sind RGB.
+-- Farben: Zahlen 0..15 sind die 16 Themenfarben, groessere Zahlen sind RGB.
+-- Farbmodus (Einstellung colorMode, F10 schaltet um):
+--  * rgb     - (Standard, AUTO) alles als echte RGB-Farbe senden, die Palette
+--              der Karte bleibt Standard. Robust: haengt nicht davon ab, dass
+--              Palettenwechsel beim Spieler ankommen. Auf manchen Servern tun
+--              sie das nicht - dann sah man die OC-Standardpalette: weisser
+--              Hintergrund, rosa/pinke Karten, unleserliche Schrift.
+--              8 Bit (Tier 3): naechste der 256 festen Farben (fast exakt).
+--              4 Bit (Tier 2): naechste der 16 Standardfarben (dunkel, gut lesbar).
+--  * palette - Themenfarben exakt in die 16 Palettenplaetze schreiben (nur
+--              sinnvoll, wenn die Palette beim Spieler ankommt)
+--  * mono    - 1 Bit (Tier 1): hell/dunkel nach Helligkeit, Text immer lesbar
+-- Jeder setPaletteColor pausiert den Rechner in OC 0,1 s - darum sparsam.
 local G = {}
 local gpu, screenAddr
 local W, H = 80, 25
@@ -20,6 +31,9 @@ local floor = math.floor
 local P = 16777216                 -- 2^24: Farben sind Palettenplatz (<16) oder RGB (<2^24)
 local clip = nil
 local depth = 8
+G.useRGB = false                   -- true: echte RGB-Farben senden (Modus rgb oder Palette haelt nicht)
+G.mode = "auto"                    -- Einstellung: auto | rgb | palette
+G.active = "rgb"                   -- tatsaechlich genutzt: rgb | palette | mono
 G.stats = { flushes = 0, sets = 0, colors = 0 }
 
 -- Palettenplaetze (Namen fuer die Apps)
@@ -61,10 +75,48 @@ function G.applyTheme(themeId, accentId)
     p[11], p[12], p[13], p[14], p[15] = STATUS[1], STATUS[2], STATUS[3], t.light and 0xC4CAD4 or STATUS[4], STATUS[5]
     G.palette = p
     G.light = t.light == true
-    if gpu and depth > 1 then
-        for i = 0, 15 do pcall(gpu.setPaletteColor, i, p[i]) end
-    end
+    if gpu then G.verifyPalette() end
     G.invalidate()
+end
+
+-- Farbmodus festlegen und (nur im Palettenmodus) die Palette schreiben und
+-- PRUEFEN. Haelt sie nicht (Server setzt sie zurueck), geht es mit RGB weiter.
+function G.verifyPalette()
+    if not gpu then return end
+    if depth <= 1 then G.useRGB, G.active = true, "mono" return end
+    local want = G.mode
+    if want ~= "palette" then want = "rgb" end
+    if want == "rgb" then
+        -- Standardpalette wiederherstellen (setDepth setzt sie bei Server UND
+        -- Spieler zurueck), damit RGB-Farben ueberall gleich aussehen
+        if G.active == "palette" then pcall(gpu.setDepth, depth) end
+        G.useRGB, G.active = true, "rgb"
+        return
+    end
+    for _ = 1, 2 do
+        for i = 0, 15 do pcall(gpu.setPaletteColor, i, G.palette[i]) end
+        local ok, c0 = pcall(gpu.getPaletteColor, 0)
+        if ok and c0 == G.palette[0] then G.useRGB, G.active = false, "palette" G.palNext = 0 return end
+    end
+    G.useRGB, G.active = true, "rgb"
+end
+function G.setMode(m)
+    G.mode = m or "auto"
+    G.verifyPalette()
+    G.resetColorCache()
+    G.invalidate()
+end
+-- Palettenmodus: je Aufruf EINEN Platz neu senden (falls der Spieler die
+-- Palette verloren hat). Abweichungen beim Server werden sofort repariert.
+function G.reassertPalette()
+    if not gpu or G.active ~= "palette" then return end
+    for i = 0, 15 do
+        local ok, c = pcall(gpu.getPaletteColor, i)
+        if ok and c ~= G.palette[i] then pcall(gpu.setPaletteColor, i, G.palette[i]) end
+    end
+    local n = G.palNext or 0
+    pcall(gpu.setPaletteColor, n, G.palette[n])
+    G.palNext = (n + 1) % 16
 end
 
 -- Farbe als RGB (fuer Mischungen und den Test)
@@ -126,7 +178,9 @@ function G.init(gpuProxy, scr, want)
     W, H = gpu.getResolution()
     G.depth = depth
     alloc()
-    if G.palette[0] and depth > 1 then for i = 0, 15 do pcall(gpu.setPaletteColor, i, G.palette[i]) end end
+    G.active = "rgb"                      -- setDepth oben hat die Palette ohnehin zurueckgesetzt
+    if G.palette[0] then G.verifyPalette() end
+    G.resetColorCache()
     G.invalidate()
     return W, H
 end
@@ -405,6 +459,26 @@ end
 -- ---------------------------------------------------------------------
 local curF, curB = nil, nil
 local concat = table.concat
+-- Farbwert fuer die GPU: Palettenplatz (schnell) oder echtes RGB, wenn die
+-- Palette nicht haelt (G.useRGB). Grosse Zahlen sind ohnehin RGB.
+-- Helligkeit 0..1
+local function lum(v)
+    return (floor(v / 65536) % 256 * 0.2126 + floor(v / 256) % 256 * 0.7152 + v % 256 * 0.0722) / 255
+end
+G.lum = lum
+local function toGpu(c, isBg)
+    if depth <= 1 then
+        -- Schwarz/Weiss: Flaechen erst ab hell weiss, Schrift schon ab mittel
+        local v = c < 16 and (G.palette[c] or 0) or c
+        if isBg then return lum(v) > 0.55 and 0xFFFFFF or 0, false end
+        return lum(v) > 0.22 and 0xFFFFFF or 0, false
+    end
+    if c < 16 then
+        if G.useRGB then return G.palette[c] or 0, false end
+        return c, true
+    end
+    return c, false
+end
 function G.flush()
     if not gpu then return end
     local buckets, order = {}, {}
@@ -436,11 +510,26 @@ function G.flush()
     end)
     for _, v in ipairs(order) do
         local f, b = v % P, floor(v / P)
-        if b ~= curB then gpu.setBackground(b, b < 16 and depth > 1) curB = b G.stats.colors = G.stats.colors + 1 end
-        if f ~= curF then gpu.setForeground(f, f < 16 and depth > 1) curF = f G.stats.colors = G.stats.colors + 1 end
-        local bk = buckets[v]
-        for _, r in ipairs(bk) do gpu.set(r[1], r[2], r[3]) end
-        G.stats.sets = G.stats.sets + #bk
+        if depth <= 1 then
+            -- Schwarz/Weiss: Schrift nie in der Flaechenfarbe (Kanten-Zeichen ▄▀ duerfen verschwinden)
+            local bv = toGpu(b, true)
+            local fv = toGpu(f, false)
+            if bv ~= curB then gpu.setBackground(bv) curB = bv G.stats.colors = G.stats.colors + 1 end
+            local bk = buckets[v]
+            for _, r in ipairs(bk) do
+                local fr = fv
+                if fr == bv and r[3]:find("[%w]") then fr = (bv == 0) and 0xFFFFFF or 0 end
+                if fr ~= curF then gpu.setForeground(fr) curF = fr G.stats.colors = G.stats.colors + 1 end
+                gpu.set(r[1], r[2], r[3])
+            end
+            G.stats.sets = G.stats.sets + #bk
+        else
+            if b ~= curB then local bv, bp = toGpu(b, true) gpu.setBackground(bv, bp) curB = b G.stats.colors = G.stats.colors + 1 end
+            if f ~= curF then local fv, fp = toGpu(f, false) gpu.setForeground(fv, fp) curF = f G.stats.colors = G.stats.colors + 1 end
+            local bk = buckets[v]
+            for _, r in ipairs(bk) do gpu.set(r[1], r[2], r[3]) end
+            G.stats.sets = G.stats.sets + #bk
+        end
     end
     G.stats.flushes = G.stats.flushes + 1
     return runs

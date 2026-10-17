@@ -153,6 +153,11 @@ local function drawSettings(x, y, w, h)
                 end
                 UI.menu("Welcher Bildschirm?", items)
             end } })
+        local cm = {}
+        for _, m in ipairs(K.COLOR_MODES) do
+            cm[#cm + 1] = { text = m.text, style = (K.set.colorMode or "auto") == m.id and "primary" or "subtle", onClick = function() K.setColorMode(m.id) end }
+        end
+        r("Farben", K.colorInfo() .. " · F10 schaltet um", cm)
         r("Töne", K.set.sound and "an" or "aus", { { text = K.set.sound and "AUS" or "AN", style = "subtle", onClick = function() K.setting("sound", not K.set.sound) end } })
         r("Updates suchen", K.set.autoUpdate == false and "von Hand" or "täglich", { { text = K.set.autoUpdate == false and "TÄGLICH" or "VON HAND", style = "subtle",
             onClick = function() K.setting("autoUpdate", K.set.autoUpdate == false) end } })

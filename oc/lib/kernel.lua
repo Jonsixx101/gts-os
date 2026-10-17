@@ -8,7 +8,7 @@ local fs = require("filesystem")
 local K = { apps = {}, byId = {}, app = nil, appId = nil, notes = {}, toast = nil, locked = true,
             services = {}, dirty = true, running = true, lastInput = 0, ROOT = ROOT, loaded = {} }
 local C = G.C
-K.VERSION = "1.2.1"
+K.VERSION = "1.2.2"
 K.EDITION = "oc"
 
 -- ---------------------------------------------------------------------
@@ -375,6 +375,7 @@ function K.initScreen()
         for _, sc in ipairs(K.SCALES) do if sc.id == K.set.scale then f = sc.f end end
         want = { aw = aw, ah = ah, f = f }
     end
+    G.mode = K.set.colorMode or "auto"
     G.applyTheme(K.set.theme, K.set.accent)
     K.w, K.h = G.init(gpu, scr.address, want)
     K.hasKeyboard = #K.keyboards > 0
@@ -389,6 +390,22 @@ function K.checkScreen()
     if scr.address ~= K.screen or (aw .. "x" .. ah) ~= K.aspect then K.initScreen() end
 end
 function K.narrow() return K.w < 100 end
+-- Farbmodus: AUTO (= RGB, robust), RGB, PALETTE (exakte Themenfarben, wenn die Palette beim Spieler ankommt)
+K.COLOR_MODES = { { id = "auto", text = "AUTO" }, { id = "rgb", text = "RGB" }, { id = "palette", text = "PALETTE" } }
+function K.colorInfo()
+    local names = { rgb = "RGB-Farben", palette = "Themen-Palette", mono = "Schwarz/Weiß" }
+    return (G.depth or 8) .. " Bit · " .. (names[G.active] or G.active)
+end
+function K.setColorMode(m)
+    K.setting("colorMode", m)
+    G.setMode(m)
+    K.dirty = true
+end
+function K.cycleColorMode()
+    local order = { auto = "rgb", rgb = "palette", palette = "auto" }
+    K.setColorMode(order[K.set.colorMode or "auto"] or "auto")
+    K.notify("Farbmodus " .. string.upper(K.set.colorMode) .. ": " .. K.colorInfo(), "info")
+end
 
 -- Taskleiste unten
 local function drawTaskbar()
@@ -566,6 +583,9 @@ function K.draw()
         drawToast()
     end
     UI.drawModal(K.hasKeyboard)
+    -- Palettenmodus: alle 2 s einen Platz neu senden (jeder kostet 0,1 s Pause)
+    local nowP = computer.uptime()
+    if not K._palT or nowP - K._palT > 2 then K._palT = nowP pcall(G.reassertPalette) end
     G.flush()
     K.dirty = false
 end
@@ -593,6 +613,11 @@ local function dispatch(ev)
         if ev[2] ~= K.screen then return end
         K.lastInput = computer.uptime()
         if not UI.scroll(ev[3], ev[4], ev[5]) then K.call("scroll", ev[5]) end
+        K.dirty = true
+    elseif name == "key_down" and ev[4] == 68 then
+        -- F10: Farbmodus umschalten (Rettung, wenn die Anzeige unleserlich ist; geht auch gesperrt)
+        K.lastInput = computer.uptime()
+        K.cycleColorMode()
         K.dirty = true
     elseif name == "key_down" then
         K.lastInput = computer.uptime()

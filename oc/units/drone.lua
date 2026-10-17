@@ -8,7 +8,7 @@
 -- Das GTS OS kann eine naehere freie Ladestation vorgeben (Befehl charge).
 -- Aufklaerung (recon): Rundflug um die Basis, der Bewegungssensor meldet.
 local ctx = ...
-local VERSION = "1.1"
+local VERSION = "1.2"
 local cp = component or require("component")
 local pc = computer or require("computer")
 local function first(t) for a in cp.list(t) do return cp.proxy(a) end end
@@ -39,9 +39,12 @@ local osAes = ctx.osAes == true
 local function send(t)
   pcall(mo.send, OS, ctx.port, ctx.pack(t, ctx.aes and osAes))
 end
+local shown
 local function setStatus(s)
   status = s
-  pcall(dr.setStatusText, (cfg.name or "GTS") .. "\n" .. s)
+  -- setStatusText pausiert die Drohne 0,1 s: nur bei Aenderung senden
+  local t = (cfg.name or "GTS") .. "\n" .. s
+  if t ~= shown then shown = t pcall(dr.setStatusText, t) end
 end
 local function light(c) cfg.light = c pcall(dr.setLightColor, c) end
 light(cfg.light)
