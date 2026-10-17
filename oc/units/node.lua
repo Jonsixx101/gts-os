@@ -60,6 +60,8 @@ local function http(p)
       error(tostring(done), 0)
     end
     if done then break end
+    local okr0, c0 = pcall(h.response)
+    if okr0 and c0 then break end
     if pc.uptime() > dl then pcall(h.close) error("Zeitüberschreitung", 0) end
     local ev = table.pack(pc.pullSignal(0.1))
     if ev[1] then queue[#queue + 1] = ev end

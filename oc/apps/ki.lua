@@ -473,6 +473,9 @@ local function request(body)
             return nil, friendly(done)
         end
         if done then break end
+        -- manche OC-Fassungen melden beim Erfolg nil statt true: dann zaehlt die Antwort
+        local okr0, c0 = pcall(h.response)
+        if okr0 and c0 then break end
         if computer.uptime() > dl then pcall(h.close) return nil, "Keine Antwort (Zeitüberschreitung)" end
         K.sleep(0.2)
     end

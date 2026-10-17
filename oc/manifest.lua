@@ -1,7 +1,7 @@
 -- GTS OS (OpenComputers) - Dateiliste fuer Installer und Update
 {
-  version = "1.2.0",
-  notes = {"KI steuert Drohnen und Robots selbst: neue Schwarm-Werkzeuge", "Schwarm-Autopilot mit Dauerauftrag (KI > EINSTELLUNGEN > AUTOPILOT)"},
+  version = "1.2.1",
+  notes = {"KI/Update/Installer: Antwort wird erkannt, auch wenn finishConnect nil meldet (Zeitueberschreitung behoben)"},
   files = {
     { path = "boot.lua", size = 7150, sum = "8e1b2fa0" },
     { path = "lib/crypto.lua", size = 6609, sum = "d86a1664" },
@@ -9,13 +9,13 @@
     { path = "lib/edit.lua", size = 10362, sum = "5ace6ad3" },
     { path = "lib/gfx.lua", size = 18992, sum = "f45cb9a5" },
     { path = "lib/json.lua", size = 6225, sum = "c9cc7088" },
-    { path = "lib/kernel.lua", size = 26775, sum = "d0399af3" },
+    { path = "lib/kernel.lua", size = 26775, sum = "368f9af4" },
     { path = "lib/net.lua", size = 8926, sum = "1ac67084" },
     { path = "lib/ops.lua", size = 8065, sum = "45ab131b" },
     { path = "lib/secu.lua", size = 15458, sum = "2b64cf30" },
     { path = "lib/stock.lua", size = 4191, sum = "78eea987" },
     { path = "lib/store.lua", size = 2034, sum = "08a4613f" },
-    { path = "lib/sys.lua", size = 15538, sum = "78ee2f7d" },
+    { path = "lib/sys.lua", size = 15709, sum = "8b136493" },
     { path = "lib/ui.lua", size = 20657, sum = "0bcab0e1" },
     { path = "lib/units.lua", size = 20553, sum = "e49c7dac" },
     { path = "apps/calc.lua", size = 12936, sum = "a7a1dc10" },
@@ -24,7 +24,7 @@
     { path = "apps/files.lua", size = 11430, sum = "8462fbd9" },
     { path = "apps/home.lua", size = 9085, sum = "8fc2323e" },
     { path = "apps/info.lua", size = 20218, sum = "c1e5f22a" },
-    { path = "apps/ki.lua", size = 54180, sum = "41722bac" },
+    { path = "apps/ki.lua", size = 54351, sum = "b83c60c2" },
     { path = "apps/notes.lua", size = 6468, sum = "4e436ab8" },
     { path = "apps/plant.lua", size = 19277, sum = "a10193d3" },
     { path = "apps/security.lua", size = 25286, sum = "ee928370" },
@@ -35,7 +35,7 @@
     { path = "units/drone.lua", size = 10728, sum = "73abc2b7" },
     { path = "units/loader.lua", size = 4411, sum = "32913b2c" },
     { path = "units/loader.min.lua", size = 3319, sum = "421e65c6" },
-    { path = "units/node.lua", size = 6582, sum = "62f2d7f0" },
+    { path = "units/node.lua", size = 6655, sum = "f312ee25" },
     { path = "units/robot.lua", size = 8069, sum = "69f684a8" },
   },
 }

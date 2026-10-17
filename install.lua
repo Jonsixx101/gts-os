@@ -102,6 +102,8 @@ if okOC and type(component) == "table" and component.isAvailable then
             local okc, done = pcall(h.finishConnect)
             if not okc then return nil, tostring(done) end
             if done then break end
+            local okr0, c0 = pcall(h.response)
+            if okr0 and c0 then break end
             if computer.uptime() > dl then return nil, "keine Antwort" end
             os.sleep(0.1)
         end
